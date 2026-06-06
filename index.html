@@ -3120,9 +3120,16 @@ function proceedFromConfirm(){
   const confirmErr=document.getElementById('confirm-error');
   if(confirmErr){ confirmErr.style.display='none'; confirmErr.textContent=''; }
 
-  const name    = ss._portalName;
-  const email   = ss._portalEmail;
-  const program = ss._portalProgram;
+  // Use saved session values, but fall back to the confirmation screen text.
+  // This prevents the "Something went wrong" error if the session object is cleared.
+  const name    = (ss._portalName || document.getElementById('confirm-name-display')?.textContent || '').trim();
+  const email   = (ss._portalEmail || document.getElementById('confirm-email-display')?.textContent || '').trim();
+  const program = (ss._portalProgram || document.getElementById('confirm-program-display')?.textContent || '').trim();
+
+  ss._portalName = name;
+  ss._portalEmail = email;
+  ss._portalProgram = program;
+  studentProgram = program;
 
   if(!name||!email||!program){
     if(confirmErr){ confirmErr.style.display='block'; confirmErr.textContent='⚠ Something went wrong. Please go back and fill in your information again.'; }
