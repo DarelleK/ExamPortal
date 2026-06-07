@@ -348,9 +348,18 @@ textarea{resize:vertical;}
             <option value="">— All Programs —</option>
             <option>Nurse Aide</option>
             <option>Medication Aide</option>
-            <option>Medical Assistant</option>
             <option>Phlebotomy</option>
             <option>EKG</option>
+            <option>Medical Assistant + Phlebotomy + EKG</option>
+          </select>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;width:130px;">
+          <label style="font-size:11px;font-weight:600;color:var(--muted);">TYPE</label>
+          <select id="qb-exam-type" style="font-size:13px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);">
+            <option value="exam">📝 Exam</option>
+            <option value="review">🔍 Review</option>
+            <option value="final">🎓 Final Exam</option>
+            <option value="workbook">📚 Workbook</option>
           </select>
         </div>
         <button class="btn btn-primary" onclick="qbGenerateExam()" style="white-space:nowrap;align-self:flex-end;">✓ Generate Exam</button>
@@ -418,11 +427,11 @@ textarea{resize:vertical;}
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Nurse Aide Evening" id="spr-nae"/> Nurse Aide Evening</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Medication Aide Morning" id="spr-mam"/> Medication Aide Morning</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Medication Aide Evening" id="spr-mae"/> Medication Aide Evening</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Phlebotomy" id="spr-ph"/> Phlebotomy</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="EKG" id="spr-ek"/> EKG</label>
           <!-- Multi programs -->
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-top:8px;margin-bottom:4px;">Allied Health Combo (select one or more)</div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="spc-ma" value="Medical Assistant" onchange="handleMultiProg()"/> Medical Assistant</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="spc-ph" value="Phlebotomy" onchange="handleMultiProg()"/> Phlebotomy</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="spc-ek" value="EKG" onchange="handleMultiProg()"/> EKG</label>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-top:8px;margin-bottom:4px;">Allied Health Combo</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="spc-combo" value="Medical Assistant + Phlebotomy + EKG" onchange="handleMultiProg()"/> Medical Assistant + Phlebotomy + EKG</label>
         </div>
         <div id="sp-prog-display" style="font-size:12px;color:var(--accent2);margin-top:6px;"></div>
       </div>
@@ -464,12 +473,8 @@ textarea{resize:vertical;}
           <option>Nurse Aide Evening</option>
           <option>Medication Aide Morning</option>
           <option>Medication Aide Evening</option>
-          <option>Medical Assistant</option>
           <option>Phlebotomy</option>
           <option>EKG</option>
-          <option>Medical Assistant + Phlebotomy</option>
-          <option>Medical Assistant + EKG</option>
-          <option>Phlebotomy + EKG</option>
           <option>Medical Assistant + Phlebotomy + EKG</option>
         </select>
       </div>
@@ -968,14 +973,28 @@ const QB_B64 = document.getElementById('qb-b64-data').innerHTML.trim();
 // ═══════════════════════════════════════════════════════════════
 // Programs: teacher sees base names; students see with shift (Morning/Evening)
 // An exam assigned to "Nurse Aide" is visible to both "Nurse Aide Morning" AND "Nurse Aide Evening"
-const TEACHER_PROGRAMS = ['Nurse Aide','Medication Aide','Medical Assistant','Phlebotomy','EKG'];
-const STUDENT_PROGRAMS = ['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening','Medical Assistant','Phlebotomy','EKG'];
+const TEACHER_PROGRAMS = ['Nurse Aide','Medication Aide','Phlebotomy','EKG','Medical Assistant + Phlebotomy + EKG'];
+const STUDENT_PROGRAMS = ['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening','EKG','Phlebotomy','Medical Assistant + Phlebotomy + EKG'];
 // Map student program → teacher program for grouping submissions
-function studentToTeacher(sp){ return sp.replace(/ Morning| Evening/,''); }
+function studentToTeacher(sp){
+  if(!sp) return '';
+  const base = sp.replace(/ Morning| Evening/,'');
+  // Combo maps to the combined teacher card
+  if(base==='Medical Assistant + Phlebotomy + EKG') return 'Medical Assistant + Phlebotomy + EKG';
+  return base;
+}
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   if(!exam.program || exam.program==='') return true; // general
-  return exam.program===studentProg || exam.program===studentToTeacher(studentProg);
+  const ep = exam.program; // exam's program
+  const isComboStudent = studentProg==='Medical Assistant + Phlebotomy + EKG';
+  // Exact match
+  if(ep===studentProg) return true;
+  // Base match (Morning/Evening)
+  if(ep===studentToTeacher(studentProg)) return true;
+  // Combo students see EKG, Phlebotomy, and Medical Assistant exams
+  if(isComboStudent && (ep==='EKG'||ep==='Phlebotomy'||ep==='Medical Assistant + Phlebotomy + EKG')) return true;
+  return false;
 }
 
 // ── QB Supabase config (read-only access to Quiz Builder banks) ──
@@ -1028,6 +1047,7 @@ async function sbFetch(path, opts={}){
 
 // Local cache — always use this for rendering
 let db = {exams:[], submissions:[], settings:{}, pin:'123456', trash:[]};
+let db_students = []; // registered students
 let dbLoaded = false;
 
 function saveDB(){
@@ -1114,7 +1134,8 @@ async function loadFromSupabase(){
       sbFetch('ep_submissions?order=date_taken.asc'),
       sbFetch('ep_settings?id=eq.1'),
       sbFetch('ep_banks?order=created_at.asc'),
-      sbFetch('ep_manual_grades?order=date.asc').catch(()=>[])
+      sbFetch('ep_manual_grades?order=date.asc').catch(()=>[]),
+      sbFetch('ep_students?order=registered_at.asc').catch(()=>[])
     ]);
 
     db_banks = (banks||[]).map(r=>({
@@ -1147,6 +1168,12 @@ async function loadFromSupabase(){
       attemptsLeft:s.attempts_left||0,
       date:s.date_taken
     }));
+
+    // Load registered students
+    try{
+      const stuRows = await sbFetch('ep_students?order=registered_at.asc');
+      db_students = (stuRows||[]).map(s=>({email:s.email,name:s.name,programs:s.programs||'',registeredAt:s.registered_at,integrityPassed:s.integrity_passed}));
+    }catch(e){ db_students=[]; }
 
     if(settings && settings.length>0){
       const s=settings[0];
@@ -1350,7 +1377,7 @@ function switchSidebarTab(){}
 // ═══════════════════════════════════════════════════════════════
 //  PROGRAM-FIRST TEACHER NAVIGATION
 // ═══════════════════════════════════════════════════════════════
-const PROG_ICONS = {'Nurse Aide':'🏥','Medication Aide':'💊','Medical Assistant':'🩺','Phlebotomy':'🩸','EKG':'💓','General':'📋'};
+const PROG_ICONS = {'Nurse Aide':'🏥','Medication Aide':'💊','Phlebotomy':'🩸','EKG':'💓','Medical Assistant + Phlebotomy + EKG':'🩺','General':'📋'};
 let currentProgram = null; // selected program
 let currentProgTab = 'exams'; // exams|subs|grades|settings
 
@@ -1360,6 +1387,7 @@ let db_manualGrades = []; // [{id,email,name,program,category,label,grade,maxGra
 
 const GRADE_CATEGORIES = [
   {key:'exam',    label:'Exam',       icon:'📝'},
+  {key:'review',  label:'Review',     icon:'🔍'},
   {key:'final',   label:'Final Exam', icon:'🎓'},
   {key:'workbook',label:'Workbook',   icon:'📚'},
   {key:'skills',  label:'Skills',     icon:'🏋'},
@@ -1595,90 +1623,199 @@ function renderProgSubs(el,prog,subs){
 
 function renderProgGrades(el,prog,subs){
   const weights=getWeightsForProg(prog);
-  const enabledWeights=weights.filter(w=>w.enabled);
   const hasShifts=['Nurse Aide','Medication Aide'].includes(prog);
-  const shifts=hasShifts?[prog+' Morning',prog+' Evening']:null;
   let currentShift=null;
+  let selectedStudent=null; // null = program view, email = individual view
 
-  // Collect all students
+  // Collect ALL students — from submissions AND from ep_students registration
   const studentMap={};
-  subs.forEach(s=>{if(!studentMap[s.studentEmail])studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program};});
-  db_manualGrades.filter(g=>studentToTeacher(g.program||'')===(prog==='General'?g.program:prog)).forEach(g=>{
+  // From submissions
+  subs.forEach(s=>{
+    if(!studentMap[s.studentEmail])
+      studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program};
+  });
+  // From manual grades
+  db_manualGrades.filter(g=>{
+    const tp=studentToTeacher(g.program||'');
+    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&g.program&&g.program.includes('Medical Assistant'));
+  }).forEach(g=>{
     if(!studentMap[g.email])studentMap[g.email]={name:g.name,email:g.email,program:g.program};
   });
+  // From registered students
+  (db_students||[]).filter(s=>{
+    const tp=studentToTeacher(s.programs||'');
+    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&s.programs&&s.programs.includes('Medical Assistant'));
+  }).forEach(s=>{
+    if(!studentMap[s.email])studentMap[s.email]={name:s.name,email:s.email,program:s.programs||prog};
+  });
 
-  function getExamGrade(email,cat){
+  // Get all exams for this program, sorted by date
+  const progExams=db.exams.filter(e=>{
+    if(e.isRetakeExam||e.is_trashed) return false;
+    const ep=e.program||'';
+    return ep===prog||ep===''||(prog==='Medical Assistant + Phlebotomy + EKG'&&ep.includes('Medical Assistant'));
+  }).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+
+  // Manual grade categories
+  const manualCats=weights.filter(w=>w.enabled&&(w.key==='workbook'||w.key==='skills'||w.key==='review'||w.key==='final'));
+
+  function getStudentGrades(email){
     const eSubs=subs.filter(s=>s.studentEmail===email);
-    if(cat==='exam'){
-      const nonFinal=eSubs.filter(s=>{const e=db.exams.find(ex=>ex.id===s.examId);return e&&!e.title.toLowerCase().includes('final');});
-      return nonFinal.length?Math.max(...nonFinal.map(s=>s.percentage)):undefined;
-    }
-    if(cat==='final'){
-      const finalSubs=eSubs.filter(s=>{const e=db.exams.find(ex=>ex.id===s.examId);return e&&e.title.toLowerCase().includes('final');});
-      return finalSubs.length?Math.max(...finalSubs.map(s=>s.percentage)):undefined;
-    }
-    return undefined;
+    const manuals=db_manualGrades.filter(g=>g.email===email);
+    const grades={};
+    // Exam grades per exam
+    progExams.forEach(e=>{
+      const sub=eSubs.find(s=>s.examId===e.id);
+      if(sub) grades['exam_'+e.id]=sub.percentage;
+    });
+    // Manual grades per category
+    manualCats.forEach(w=>{
+      const mg=manuals.filter(g=>g.category===w.key);
+      if(mg.length) grades[w.key]=Math.round(mg.reduce((a,g)=>a+(g.grade/g.maxGrade*100),0)/mg.length);
+    });
+    return grades;
   }
-  function getManualGrade(email,cat){
-    const mg=db_manualGrades.filter(g=>g.email===email&&g.category===cat);
-    return mg.length?Math.round(mg.reduce((a,g)=>a+(g.grade/g.maxGrade*100),0)/mg.length):undefined;
-  }
-  function getGrade(email,cat){
-    if(cat==='exam'||cat==='final') return getExamGrade(email,cat);
-    return getManualGrade(email,cat);
-  }
+
   function calcFinal(email){
-    if(!enabledWeights.length) return null;
-    const total=enabledWeights.reduce((a,w)=>a+w.weight,0);
+    const enabled=weights.filter(w=>w.enabled);
+    if(!enabled.length) return null;
+    const grades=getStudentGrades(email);
+    const eSubs=subs.filter(s=>s.studentEmail===email);
+    // Exam avg for 'exam' category
+    if(enabled.find(w=>w.key==='exam')){
+      const examScores=progExams.filter(e=>e.examType==='exam'||!e.examType).map(e=>{
+        const sub=eSubs.find(s=>s.examId===e.id); return sub?sub.percentage:null;
+      }).filter(v=>v!==null);
+      if(examScores.length) grades.exam=Math.round(examScores.reduce((a,b)=>a+b,0)/examScores.length);
+    }
+    const total=enabled.reduce((a,w)=>a+w.weight,0);
     if(!total) return null;
     let score=0,used=0;
-    enabledWeights.forEach(w=>{const v=getGrade(email,w.key);if(v!==undefined){score+=v*(w.weight/total);used+=w.weight;}});
+    enabled.forEach(w=>{if(grades[w.key]!==undefined){score+=grades[w.key]*(w.weight/total);used+=w.weight;}});
     return used?Math.round(score*(total/used)):null;
   }
 
-  function buildGradeTable(students){
-    const cats=enabledWeights.length?enabledWeights:[{key:'exam',label:'Exam',icon:'📝'}];
-    const headers=cats.map(w=>`<th style="text-align:center;min-width:90px;">${w.icon||''} ${w.label||w.key}</th>`).join('');
-    const rows=students.map(st=>{
-      const cells=cats.map(w=>{
-        const v=getGrade(st.email,w.key);
-        const isManual=w.key==='workbook'||w.key==='skills';
-        const cellId='gc-'+st.email.replace(/[@.]/g,'_')+'-'+w.key;
-        if(v===undefined){
-          return `<td style="text-align:center;" id="${cellId}">
-            <span class="grade-cell-empty" data-email="${st.email}" data-cat="${w.key}" data-name="${st.name}" data-prog="${st.program}" title="Click to add grade" style="cursor:pointer;color:var(--muted);font-size:12px;text-decoration:underline dotted;">+ Add</span>
-          </td>`;
-        }
-        const badge=`<span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;" data-email="${st.email}" data-cat="${w.key}" data-name="${st.name}" data-prog="${st.program}" title="Click to edit">${v}%</span>`;
-        return `<td style="text-align:center;" id="${cellId}">${badge}</td>`;
-      }).join('');
-      const fin=calcFinal(st.email);
+  // ── Individual student view ──
+  function renderStudentView(email){
+    const st=studentMap[email];
+    const eSubs=subs.filter(s=>s.studentEmail===email).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const manuals=db_manualGrades.filter(g=>g.email===email).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const final=calcFinal(email);
+    const examMap={};db.exams.forEach(e=>examMap[e.id]=e);
+
+    const examRows=eSubs.map(s=>{
+      const ex=examMap[s.examId];
+      const typeLabel=ex?({exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final',workbook:'📚 Workbook'}[ex.examType]||'📝 Exam'):'📝 Exam';
       return `<tr>
-        <td style="white-space:nowrap;">
-          <div style="font-weight:500;">${st.name}</div>
-          <div style="font-size:11px;color:var(--muted);">${st.program}</div>
-        </td>
-        ${cells}
-        <td style="text-align:center;font-weight:600;">${fin!==null?`<span class="grade-badge ${fin>=80?'grade-pass':'grade-fail'}" style="font-size:13px;">${fin}%</span>`:'—'}</td>
+        <td>${typeLabel}</td>
+        <td style="font-weight:500;">${ex?ex.title:s.examTitle||'—'}</td>
+        <td style="text-align:center;">${s.score}/${s.total}</td>
+        <td style="text-align:center;"><span class="grade-badge ${s.percentage>=80?'grade-pass':'grade-fail'}">${s.percentage}%</span></td>
+        <td style="font-size:12px;color:var(--muted);">${new Date(s.date).toLocaleDateString()}</td>
+        <td style="font-size:11px;color:var(--muted);">${s.attemptsUsed||1}/${s.attemptsMax||3}</td>
       </tr>`;
     }).join('');
 
-    return `<div style="overflow-x:auto;">
-      <table class="sub-table" style="width:100%;min-width:400px;">
-        <thead><tr><th>Student</th>${headers}<th style="text-align:center;">Final</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    const manualRows=manuals.map(g=>{
+      const pct=Math.round(g.grade/g.maxGrade*100);
+      const catLabel={exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final',workbook:'📚 Workbook',skills:'🏋 Skills'}[g.category]||g.category;
+      return `<tr>
+        <td>${catLabel}</td>
+        <td style="font-weight:500;">${g.label}</td>
+        <td style="text-align:center;">${g.grade}/${g.maxGrade}</td>
+        <td style="text-align:center;"><span class="grade-badge ${pct>=80?'grade-pass':'grade-fail'}">${pct}%</span></td>
+        <td style="font-size:12px;color:var(--muted);">${new Date(g.date).toLocaleDateString()}</td>
+        <td></td>
+      </tr>`;
+    }).join('');
+
+    el.innerHTML=`
+      <div id="prog-grades-printable">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-outline btn-sm" onclick="selectedStudent=null;renderProgGrades(document.getElementById('prog-tab-content'),'${prog}',${JSON.stringify([])})">← Back to Class</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-outline btn-sm" onclick="openEditStudentFromGradebook('${email}')">✏ Edit Info</button>
+            <button class="btn btn-outline btn-sm" onclick="openManualGradeForStudent('skills','${email}','${st.name}','${st.program}')">+ Add Grade</button>
+            <button class="btn btn-outline btn-sm" onclick="printGradesForProg('${prog}')">🖨 Print</button>
+          </div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div style="font-size:20px;font-family:'DM Serif Display',serif;margin-bottom:3px;">${st.name}</div>
+              <div style="font-size:13px;color:var(--muted);">${st.program} · ${st.email}</div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams</div></div>
+              <div class="stat-pill"><div class="val">${eSubs.filter(s=>s.percentage>=80).length}</div><div class="lbl">Passed</div></div>
+              ${final!==null?`<div class="stat-pill"><div class="val" style="color:${final>=80?'var(--green)':'var(--accent)'};">${final}%</div><div class="lbl">Final Grade</div></div>`:''}
+            </div>
+          </div>
+        </div>
+        ${eSubs.length||manuals.length?`
+        <table class="sub-table" style="width:100%;">
+          <thead><tr><th>Type</th><th>Title</th><th>Score</th><th>Grade</th><th>Date</th><th>Attempts</th></tr></thead>
+          <tbody>${examRows}${manualRows}</tbody>
+        </table>`:'<div class="empty"><div class="empty-icon">📭</div>No grades yet for this student.</div>'}
+      </div>`;
+
+    // Wire back button properly
+    el.querySelector('[onclick*="Back to Class"]')?.addEventListener('click', ()=>{
+      selectedStudent=null;
+      renderProgGrades(el,prog,subs);
+    });
   }
 
-  function render(filterStudents){
-    const tableHTML=buildGradeTable(filterStudents);
+  // ── Program view (all students) ──
+  function renderProgramView(students){
+    // Build exam columns: each exam in this program
+    const typeLabel={exam:'📝',review:'🔍',final:'🎓',workbook:'📚',skills:'🏋'};
+    const examCols=progExams.map(e=>({
+      id:e.id, title:e.title,
+      type:typeLabel[e.examType||'exam']||'📝',
+      shortTitle:e.title.length>18?e.title.slice(0,16)+'…':e.title
+    }));
+    const manualColKeys=manualCats.map(w=>({key:w.key,label:w.icon+' '+w.label}));
+
+    const allCols=[...examCols.map(e=>({id:'ex_'+e.id,label:e.type+' '+e.shortTitle,title:e.title})),
+                   ...manualColKeys.map(w=>({id:'mg_'+w.key,label:w.label}))];
+
+    const headers=allCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.title||''}">${c.label}</th>`).join('');
+
+    const rows=students.map(st=>{
+      const grades=getStudentGrades(st.email);
+      const final=calcFinal(st.email);
+      const cells=allCols.map(col=>{
+        if(col.id.startsWith('ex_')){
+          const eid=col.id.replace('ex_','');
+          const v=grades['exam_'+eid];
+          if(v===undefined) return `<td style="text-align:center;color:var(--muted);font-size:11px;">—</td>`;
+          return `<td style="text-align:center;"><span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}">${v}%</span></td>`;
+        } else {
+          const key=col.id.replace('mg_','');
+          const v=grades[key];
+          if(v===undefined) return `<td style="text-align:center;">
+            <span style="font-size:11px;color:var(--muted);cursor:pointer;text-decoration:underline dotted;" 
+              data-email="${st.email}" data-cat="${key}" data-name="${st.name}" data-prog="${st.program}">+ Add</span>
+          </td>`;
+          return `<td style="text-align:center;"><span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;"
+            data-email="${st.email}" data-cat="${key}" data-name="${st.name}" data-prog="${st.program}">${v}%</span></td>`;
+        }
+      }).join('');
+      return `<tr>
+        <td><button class="btn btn-ghost btn-sm" style="text-align:left;font-weight:500;padding:2px 6px;" data-email="${st.email}">${st.name}</button>
+          <div style="font-size:11px;color:var(--muted);">${st.program}</div></td>
+        ${cells}
+        <td style="text-align:center;font-weight:600;">${final!==null?`<span class="grade-badge ${final>=80?'grade-pass':'grade-fail'}">${final}%</span>`:'—'}</td>
+      </tr>`;
+    }).join('');
+
     el.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${hasShifts?`
             <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
-            ${shifts.map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
+            ${['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening'].filter(s=>s.startsWith(prog)).map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
           `:''}
         </div>
         <div style="display:flex;gap:8px;">
@@ -1687,27 +1824,36 @@ function renderProgGrades(el,prog,subs){
           <button class="btn btn-outline btn-sm" onclick="printGradesForProg('${prog}')">🖨 Print</button>
         </div>
       </div>
-      <div id="prog-grades-printable">${tableHTML}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;">💡 Click any grade or "+ Add" to edit. Grades marked % are percentages.</div>`;
+      <div id="prog-grades-printable" style="overflow-x:auto;">
+        <table class="sub-table" style="width:100%;min-width:400px;">
+          <thead><tr><th>Student</th>${headers}<th style="text-align:center;">Final</th></tr></thead>
+          <tbody>${rows||'<tr><td colspan="99" style="text-align:center;color:var(--muted);padding:20px;">No students yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;">💡 Click a student name to see their individual grades. Click any grade to edit.</div>`;
 
+    // Wire student name clicks → individual view
+    el.querySelectorAll('[data-email]').forEach(btn=>{
+      if(btn.tagName==='BUTTON'){
+        btn.addEventListener('click',()=>{ selectedStudent=btn.dataset.email; renderStudentView(btn.dataset.email); });
+      } else {
+        // Grade cell click → edit
+        btn.addEventListener('click',()=>openManualGradeForStudent(btn.dataset.cat,btn.dataset.email,btn.dataset.name,btn.dataset.prog));
+      }
+    });
     // Shift filter
     if(hasShifts) el.querySelectorAll('[data-shift]').forEach(btn=>{
       btn.addEventListener('click',()=>{
         currentShift=btn.dataset.shift||null;
         const filtered=Object.values(studentMap).filter(st=>currentShift?st.program===currentShift:true);
-        render(filtered);
-      });
-    });
-
-    // Click-to-edit grade cells
-    el.querySelectorAll('[data-email][data-cat]').forEach(cell=>{
-      cell.addEventListener('click',()=>{
-        openManualGradeForStudent(cell.dataset.cat,cell.dataset.email,cell.dataset.name,cell.dataset.prog);
+        renderProgramView(filtered.sort((a,b)=>a.name.localeCompare(b.name)));
       });
     });
   }
 
-  render(Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name)));
+  const allStudents=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
+  if(selectedStudent) renderStudentView(selectedStudent);
+  else renderProgramView(allStudents);
 }
 
 function renderProgWeightSettings(el,prog){
@@ -1827,6 +1973,24 @@ function openManualGradeForStudent(cat,email,name,program){
   openModal('modal-manual-grade');
 }
 
+function openEditStudentFromGradebook(email){
+  const sub=db.submissions.find(s=>s.studentEmail===email);
+  const stu=db_students.find(s=>s.email===email);
+  const sid=sub?sub.id:null;
+  if(sid){
+    openEditStudent(sid);
+  } else if(stu){
+    // Student registered but no submission yet — edit directly
+    document.getElementById('edit-stu-name').value=stu.name;
+    document.getElementById('edit-stu-email').value=stu.email;
+    document.getElementById('edit-stu-program').value=stu.programs||'';
+    document.getElementById('edit-stu-sid').value='student:'+stu.email;
+    openModal('modal-edit-student');
+  } else {
+    toast('Student record not found.');
+  }
+}
+
 async function saveManualGrade(){
   const email   =document.getElementById('mg-email').value.trim();
   const name    =document.getElementById('mg-name').value.trim();
@@ -1922,7 +2086,8 @@ function createExam(){
   const title   = document.getElementById('ne-title').value.trim();
   const program = document.getElementById('ne-program').value;
   if(!title){ toast('Please enter a title.'); return; }
-  const exam = { id: Date.now().toString(), title, program, teacherEmail:db.settings.teacherEmail||'', open:true, questions:[] };
+  const examType = (document.getElementById('ne-type')||{value:'exam'}).value;
+  const exam = { id: Date.now().toString(), title, program, examType:examType||'exam', teacherEmail:db.settings.teacherEmail||'', open:true, questions:[] };
   db.exams.push(exam); saveDB(); closeModal('modal-new-exam');
   syncExam(exam).catch(()=>{});
   currentExamId=exam.id; showTeacherTab('dashboard');
@@ -2960,20 +3125,19 @@ function selectStudentType(type){
 
 // Handle multi-program checkbox — deselects single radio if combo chosen
 function handleMultiProg(){
-  const checks=['spc-ma','spc-ph','spc-ek'];
-  const anyChecked=checks.some(id=>document.getElementById(id)?.checked);
-  if(anyChecked){
-    // Deselect single-program radios
+  const combo=document.getElementById('spc-combo');
+  if(combo&&combo.checked){
+    // Deselect single-program radios when combo selected
     document.querySelectorAll('input[name="sp-prog-single"]').forEach(r=>r.checked=false);
   }
   updateProgDisplay();
 }
 function updateProgDisplay(){
   const single=document.querySelector('input[name="sp-prog-single"]:checked');
-  const combos=['spc-ma','spc-ph','spc-ek'].filter(id=>document.getElementById(id)?.checked).map(id=>document.getElementById(id).value);
+  const combo=document.getElementById('spc-combo');
   let display='';
   if(single) display=single.value;
-  else if(combos.length) display=combos.join(' + ');
+  else if(combo&&combo.checked) display='Medical Assistant + Phlebotomy + EKG';
   document.getElementById('sp-program').value=display;
   const dispEl=document.getElementById('sp-prog-display');
   if(dispEl) dispEl.textContent=display?'Selected: '+display:'';
@@ -2983,7 +3147,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('input[name="sp-prog-single"]').forEach(r=>{
     r.addEventListener('change',()=>{
       if(r.checked){
-        ['spc-ma','spc-ph','spc-ek'].forEach(id=>{const el=document.getElementById(id);if(el)el.checked=false;});
+        const combo=document.getElementById('spc-combo');
+        if(combo) combo.checked=false;
       }
       updateProgDisplay();
     });
@@ -3120,16 +3285,9 @@ function proceedFromConfirm(){
   const confirmErr=document.getElementById('confirm-error');
   if(confirmErr){ confirmErr.style.display='none'; confirmErr.textContent=''; }
 
-  // Use saved session values, but fall back to the confirmation screen text.
-  // This prevents the "Something went wrong" error if the session object is cleared.
-  const name    = (ss._portalName || document.getElementById('confirm-name-display')?.textContent || '').trim();
-  const email   = (ss._portalEmail || document.getElementById('confirm-email-display')?.textContent || '').trim();
-  const program = (ss._portalProgram || document.getElementById('confirm-program-display')?.textContent || '').trim();
-
-  ss._portalName = name;
-  ss._portalEmail = email;
-  ss._portalProgram = program;
-  studentProgram = program;
+  const name    = ss._portalName;
+  const email   = ss._portalEmail;
+  const program = ss._portalProgram;
 
   if(!name||!email||!program){
     if(confirmErr){ confirmErr.style.display='block'; confirmErr.textContent='⚠ Something went wrong. Please go back and fill in your information again.'; }
@@ -3236,8 +3394,7 @@ function _renderExamList(name, email, program){
   // Regular open exams for this program
   const exams = db.exams.filter(e=>{
     if(!e.open || !e.questions.length || e.isRetakeExam) return false;
-    if(!e.program || e.program==='' || e.program==='General') return true;
-    return e.program === teacherProg;
+    return examVisibleTo(e, program);
   });
 
   // Retake exams specifically for this student — deduplicate: one per original title
