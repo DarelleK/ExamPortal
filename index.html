@@ -1495,7 +1495,14 @@ function renderProgTab(){
   if(!el||!currentProgram) return;
 
   const prog=currentProgram;
-  const exams=db.exams.filter(e=>!e.isRetakeExam&&!e.is_trashed&&(e.program===prog||(prog==='General'&&!e.program)));
+  // For combo program, show MA + EKG + Phlebotomy exams
+  const exams=db.exams.filter(e=>{
+    if(e.isRetakeExam||e.is_trashed) return false;
+    if(prog==='Medical Assistant + Phlebotomy + EKG'){
+      return e.program==='Medical Assistant + Phlebotomy + EKG'||e.program==='EKG'||e.program==='Phlebotomy'||!e.program;
+    }
+    return e.program===prog||(prog==='General'&&!e.program);
+  });
   const subs=db.submissions.filter(s=>studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program));
   const studentCount=new Set(subs.map(s=>s.studentEmail)).size;
 
@@ -1514,17 +1521,26 @@ function renderProgExams(el,prog,exams){
     el.innerHTML='<div class="empty"><div class="empty-icon">📋</div>No exams for this program yet.<br><button class="btn btn-primary" style="margin-top:12px;" onclick="openNewExamModal()">+ Create Exam</button></div>';
     return;
   }
-  el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${exams.map(e=>{
+  const sortedExams=[...exams].sort((a,b)=>a.title.localeCompare(b.title));
+  el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${sortedExams.map(e=>{
     const eSubs=db.submissions.filter(s=>s.examId===e.id);
     const passCount=eSubs.filter(s=>s.percentage>=80).length;
-    return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:18px;cursor:pointer;transition:all .15s;" data-eid="${e.id}">
+    return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:18px;transition:all .15s;" data-eid="${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
         <div style="font-weight:600;font-size:14px;flex:1;line-height:1.4;">${e.title}</div>
         <span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>
       </div>
-      <div style="font-size:12px;color:var(--muted);">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
-      ${eSubs.length?`<div style="font-size:11px;margin-top:6px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
-      <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
+      ${eSubs.length?`<div style="font-size:11px;margin-bottom:8px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
+      <div style="margin-bottom:8px;" onclick="event.stopPropagation()">
+        <select data-action="set-type" data-eid="${e.id}" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);width:100%;">
+          <option value="exam" ${(!e.examType||e.examType==='exam')?'selected':''}>📝 Exam</option>
+          <option value="review" ${e.examType==='review'?'selected':''}>🔍 Review</option>
+          <option value="final" ${e.examType==='final'?'selected':''}>🎓 Final Exam</option>
+          <option value="workbook" ${e.examType==='workbook'?'selected':''}>📚 Workbook</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
         <button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>
         <button class="btn btn-outline btn-xs" data-action="rename" data-eid="${e.id}">✏ Rename</button>
         <button class="btn btn-outline btn-xs" data-action="print" data-eid="${e.id}">🖨 Print</button>
@@ -1533,20 +1549,35 @@ function renderProgExams(el,prog,exams){
     </div>`;
   }).join('')}</div>`;
 
-  // Wire card clicks → open detail
-  el.querySelectorAll('[data-eid]:not([data-action])').forEach(card=>{
-    card.addEventListener('click',()=>openExamDetail(card.dataset.eid));
+  // Wire card clicks → open detail (only on card itself, not buttons)
+  el.querySelectorAll('[data-eid]').forEach(card=>{
+    if(card.tagName==='DIV' && !card.dataset.action){
+      card.addEventListener('click',()=>openExamDetail(card.dataset.eid));
+    }
   });
-  // Wire action buttons
+  // Wire action buttons and type selects
   el.querySelectorAll('[data-action]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
+    btn.addEventListener('click', async (ev)=>{
+      ev.stopPropagation();
       const eid=btn.dataset.eid;
       const action=btn.dataset.action;
       if(action==='toggle'){ await toggleExamOpen(eid); }
       else if(action==='rename'){ openRenameExamModal(eid); }
       else if(action==='print'){ printExamAsDoc(eid); }
       else if(action==='delete'){ openDeleteExamModal(eid); }
+      else if(action==='set-type'){
+        const exam=db.exams.find(e=>e.id===eid);
+        if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Type updated'); }
+      }
     });
+    // Also handle select onChange
+    if(btn.tagName==='SELECT'){
+      btn.addEventListener('change', async ()=>{
+        const eid=btn.dataset.eid;
+        const exam=db.exams.find(e=>e.id===eid);
+        if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated'); }
+      });
+    }
   });
 }
 
@@ -1652,9 +1683,12 @@ function renderProgGrades(el,prog,subs){
   // Get all exams for this program, sorted by date
   const progExams=db.exams.filter(e=>{
     if(e.isRetakeExam||e.is_trashed) return false;
+    if(prog==='Medical Assistant + Phlebotomy + EKG'){
+      return e.program==='Medical Assistant + Phlebotomy + EKG'||e.program==='EKG'||e.program==='Phlebotomy'||!e.program;
+    }
     const ep=e.program||'';
-    return ep===prog||ep===''||(prog==='Medical Assistant + Phlebotomy + EKG'&&ep.includes('Medical Assistant'));
-  }).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+    return ep===prog||ep==='';
+  }).sort((a,b)=>a.title.localeCompare(b.title));
 
   // Manual grade categories
   const manualCats=weights.filter(w=>w.enabled&&(w.key==='workbook'||w.key==='skills'||w.key==='review'||w.key==='final'));
@@ -1729,10 +1763,12 @@ function renderProgGrades(el,prog,subs){
       </tr>`;
     }).join('');
 
+    // Store reference for back button
+    const backFn = ()=>{ selectedStudent=null; renderProgTab(); };
     el.innerHTML=`
       <div id="prog-grades-printable">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
-          <button class="btn btn-outline btn-sm" onclick="selectedStudent=null;renderProgGrades(document.getElementById('prog-tab-content'),'${prog}',${JSON.stringify([])})">← Back to Class</button>
+          <button class="btn btn-outline btn-sm" id="back-to-class-btn">← Back to Class</button>
           <div style="display:flex;gap:8px;">
             <button class="btn btn-outline btn-sm" onclick="openEditStudentFromGradebook('${email}')">✏ Edit Info</button>
             <button class="btn btn-outline btn-sm" onclick="openManualGradeForStudent('skills','${email}','${st.name}','${st.program}')">+ Add Grade</button>
@@ -1746,8 +1782,9 @@ function renderProgGrades(el,prog,subs){
               <div style="font-size:13px;color:var(--muted);">${st.program} · ${st.email}</div>
             </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
-              <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams</div></div>
+              <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams Taken</div></div>
               <div class="stat-pill"><div class="val">${eSubs.filter(s=>s.percentage>=80).length}</div><div class="lbl">Passed</div></div>
+              ${eSubs.length?`<div class="stat-pill"><div class="val" style="color:${Math.round(eSubs.reduce((a,s)=>a+s.percentage,0)/eSubs.length)>=80?'var(--green)':'var(--accent)'};">${Math.round(eSubs.reduce((a,s)=>a+s.percentage,0)/eSubs.length)}%</div><div class="lbl">Avg Score</div></div>`:''}
               ${final!==null?`<div class="stat-pill"><div class="val" style="color:${final>=80?'var(--green)':'var(--accent)'};">${final}%</div><div class="lbl">Final Grade</div></div>`:''}
             </div>
           </div>
@@ -1760,10 +1797,8 @@ function renderProgGrades(el,prog,subs){
       </div>`;
 
     // Wire back button properly
-    el.querySelector('[onclick*="Back to Class"]')?.addEventListener('click', ()=>{
-      selectedStudent=null;
-      renderProgGrades(el,prog,subs);
-    });
+    const backBtn=el.querySelector('#back-to-class-btn');
+    if(backBtn) backBtn.addEventListener('click', backFn);
   }
 
   // ── Program view (all students) ──
@@ -1953,12 +1988,42 @@ function openManualGradeModal(prog){
   document.getElementById('mg-id').value='';
   document.getElementById('mg-email').value='';
   document.getElementById('mg-name').value='';
-  document.getElementById('mg-program').value=prog==='General'?'':prog+' Morning';
+  document.getElementById('mg-program').value='';
   document.getElementById('mg-category').value='skills';
   document.getElementById('mg-label').value='';
   document.getElementById('mg-grade').value='';
   document.getElementById('mg-max').value='100';
+  // Populate student dropdown for this program
+  populateMGStudentDropdown(prog);
   openModal('modal-manual-grade');
+}
+
+function populateMGStudentDropdown(prog){
+  const sel=document.getElementById('mg-student-select');
+  if(!sel) return;
+  // Collect students from submissions + registered students for this program
+  const studentMap={};
+  db.submissions.filter(s=>{
+    const tp=studentToTeacher(s.program||'');
+    return tp===prog||prog===''||prog==='General';
+  }).forEach(s=>{ studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program}; });
+  (db_students||[]).filter(s=>{
+    const tp=studentToTeacher(s.programs||'');
+    return tp===prog||prog===''||prog==='General';
+  }).forEach(s=>{ if(!studentMap[s.email]) studentMap[s.email]={name:s.name,email:s.email,program:s.programs}; });
+
+  const students=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
+  sel.innerHTML='<option value="">— Select a student —</option>'+
+    students.map(s=>`<option value="${s.email}" data-name="${s.name}" data-prog="${s.program}">${s.name} (${s.program})</option>`).join('');
+}
+
+function fillManualGradeStudent(){
+  const sel=document.getElementById('mg-student-select');
+  const opt=sel.options[sel.selectedIndex];
+  if(!opt||!opt.value) return;
+  document.getElementById('mg-email').value=opt.value;
+  document.getElementById('mg-name').value=opt.dataset.name||'';
+  document.getElementById('mg-program').value=opt.dataset.prog||'';
 }
 
 function openManualGradeForStudent(cat,email,name,program){
@@ -1970,6 +2035,10 @@ function openManualGradeForStudent(cat,email,name,program){
   document.getElementById('mg-label').value='';
   document.getElementById('mg-grade').value='';
   document.getElementById('mg-max').value='100';
+  // Populate dropdown and pre-select this student
+  populateMGStudentDropdown(studentToTeacher(program));
+  const sel=document.getElementById('mg-student-select');
+  if(sel) sel.value=email;
   openModal('modal-manual-grade');
 }
 
@@ -3298,23 +3367,28 @@ function proceedFromConfirm(){
 
   // Validate against existing records
   const existingSub = db.submissions.find(s=>s.studentEmail.toLowerCase()===emailLow);
-  if(existingSub){
-    const nameMatch = existingSub.studentName.trim().toLowerCase()===name.toLowerCase();
-    const progMatch = studentToTeacher(existingSub.program)===studentToTeacher(program);
+  // Also check ep_students registered list
+  const existingStudent = db_students.find(s=>s.email.toLowerCase()===emailLow);
+  const existingRecord = existingSub || (existingStudent ? {studentName:existingStudent.name, program:existingStudent.programs} : null);
+
+  if(existingRecord){
+    const nameMatch = existingRecord.studentName.trim().toLowerCase()===name.toLowerCase();
+    // More lenient program match — just check base program matches
+    const storedBase = (existingRecord.program||'').replace(/ Morning| Evening/,'').toLowerCase();
+    const enteredBase = program.replace(/ Morning| Evening/,'').toLowerCase();
+    const progMatch = storedBase===enteredBase || storedBase.includes(enteredBase) || enteredBase.includes(storedBase) || storedBase==='' ;
 
     if(!nameMatch){
       if(confirmErr){
         confirmErr.style.display='block';
-        confirmErr.innerHTML='⚠ The name <strong>'+name+'</strong> does not match our records for this email. Expected <strong>'+existingSub.studentName+'</strong>.<br><br>Please go back and correct your name.';
+        confirmErr.innerHTML='⚠ The name <strong>'+name+'</strong> does not match our records for this email. Expected <strong>'+existingRecord.studentName+'</strong>.<br><br>Please go back and correct your name.';
       }
       return;
     }
-    if(!progMatch){
-      if(confirmErr){
-        confirmErr.style.display='block';
-        confirmErr.innerHTML='⚠ The program <strong>'+program+'</strong> does not match our records for this email.<br><br>Please go back and select the correct program.';
-      }
-      return;
+    // Don't block on program mismatch — just warn
+    if(!progMatch && storedBase!==''){
+      // Allow through but note the mismatch — teacher can fix in gradebook
+      console.warn('Program mismatch for', email, ':', storedBase, 'vs', enteredBase);
     }
   }
 
