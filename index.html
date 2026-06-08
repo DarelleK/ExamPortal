@@ -596,6 +596,7 @@ textarea{resize:vertical;}
         <option>Nurse Aide</option>
         <option>Medication Aide</option>
         <option>Medical Assistant</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
       </select>
@@ -729,16 +730,21 @@ textarea{resize:vertical;}
 <div class="modal-overlay" id="modal-manual-grade">
   <div class="modal" style="max-width:440px;">
     <h2>✏ Add / Edit Grade</h2>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:16px;">Manually enter a grade for a student (e.g. Skills observation, Workbook, paper exam).</p>
-    <div class="field"><label>Student Email</label><input id="mg-email" type="email" placeholder="student@school.edu"/></div>
-    <div class="field"><label>Student Name</label><input id="mg-name" type="text" placeholder="Jane Doe"/></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px;">Select a student, then enter the grade details.</p>
+    <div class="field"><label>Student</label>
+      <select id="mg-student-select" onchange="fillManualGradeStudent()"></select>
+      <div id="mg-student-help" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
+    </div>
+    <div class="field"><label>Student Email</label><input id="mg-email" type="email" placeholder="student@school.edu" readonly/></div>
+    <div class="field"><label>Student Name</label><input id="mg-name" type="text" placeholder="Jane Doe" readonly/></div>
     <div class="field"><label>Program</label>
-      <select id="mg-program">
+      <select id="mg-program" disabled>
         <option>Nurse Aide Morning</option>
         <option>Nurse Aide Evening</option>
         <option>Medication Aide Morning</option>
         <option>Medication Aide Evening</option>
         <option>Medical Assistant</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
       </select>
@@ -803,6 +809,7 @@ textarea{resize:vertical;}
         <option>Nurse Aide</option>
         <option>Medication Aide</option>
         <option>Medical Assistant</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
       </select>
@@ -983,6 +990,22 @@ function studentToTeacher(sp){
   if(base==='Medical Assistant + Phlebotomy + EKG') return 'Medical Assistant + Phlebotomy + EKG';
   return base;
 }
+
+const COMBO_PROGRAM = 'Medical Assistant + Phlebotomy + EKG';
+function examBelongsToProgram(examProgram, dashboardProgram){
+  const ep = examProgram || '';
+  if(dashboardProgram===COMBO_PROGRAM){
+    return ep===COMBO_PROGRAM || ep==='Medical Assistant' || ep==='EKG' || ep==='Phlebotomy' || !ep;
+  }
+  return ep===dashboardProgram || (dashboardProgram==='General'&&!ep);
+}
+function studentBelongsToProgram(studentProgram, dashboardProgram){
+  const sp = studentProgram || '';
+  const teacherProgram = studentToTeacher(sp);
+  return teacherProgram===dashboardProgram ||
+    (dashboardProgram===COMBO_PROGRAM && sp.includes('Medical Assistant')) ||
+    (dashboardProgram==='General'&&!sp);
+}
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   if(!exam.program || exam.program==='') return true; // general
@@ -1161,7 +1184,7 @@ async function loadFromSupabase(){
   const loadingEl = document.getElementById('sb-loading');
   if(loadingEl) loadingEl.style.display='flex';
   try{
-    const [exams, subs, settings, banks, manualGrades] = await Promise.all([
+    const [exams, subs, settings, banks, manualGrades, students] = await Promise.all([
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
       sbFetch('ep_submissions?order=date_taken.asc'),
       sbFetch('ep_settings?id=eq.1'),
@@ -1183,6 +1206,7 @@ async function loadFromSupabase(){
 
     db.exams = (exams||[]).map(e=>({
       id:e.id, title:e.title, program:e.program||'',
+      examType:e.exam_type||'exam',
       teacherEmail:e.teacher_email||'', open:e.open,
       questions:e.questions||[], studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -1201,11 +1225,10 @@ async function loadFromSupabase(){
       date:s.date_taken
     }));
 
-    // Load registered students
-    try{
-      const stuRows = await sbFetch('ep_students?order=registered_at.asc');
-      db_students = (stuRows||[]).map(s=>({email:s.email,name:s.name,programs:s.programs||'',registeredAt:s.registered_at,integrityPassed:s.integrity_passed}));
-    }catch(e){ db_students=[]; }
+    db_students = (students||[]).map(s=>({
+      email:s.email,name:s.name,programs:s.programs||'',
+      registeredAt:s.registered_at,integrityPassed:s.integrity_passed
+    }));
 
     if(settings && settings.length>0){
       const s=settings[0];
@@ -1476,10 +1499,14 @@ function renderDashboard(){
 
   const allProgs = [...TEACHER_PROGRAMS]; // No 'General' card
   grid.innerHTML = allProgs.map(prog=>{
-    const examCount = db.exams.filter(e=>!e.isRetakeExam && !e.is_trashed && (e.program===prog||(prog==='General'&&!e.program))).length;
-    const subCount  = db.submissions.filter(s=>studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program)).length;
-    const studentCount = new Set(db.submissions.filter(s=>studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program)).map(s=>s.studentEmail)).size;
-    const passRate  = subCount ? Math.round(db.submissions.filter(s=>(studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program))&&s.percentage>=80).length/subCount*100) : null;
+    const programSubs = db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
+    const examCount = db.exams.filter(e=>!e.isRetakeExam && !e.is_trashed && examBelongsToProgram(e.program,prog)).length;
+    const subCount  = programSubs.length;
+    const studentEmails = new Set(programSubs.map(s=>s.studentEmail.toLowerCase()));
+    (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog))
+      .forEach(s=>studentEmails.add(s.email.toLowerCase()));
+    const studentCount = studentEmails.size;
+    const passRate  = subCount ? Math.round(programSubs.filter(s=>s.percentage>=80).length/subCount*100) : null;
 
     return `<div class="prog-card" data-prog="${prog}">
       <div class="prog-card-icon">${PROG_ICONS[prog]||'📋'}</div>
@@ -1538,13 +1565,13 @@ function renderProgTab(){
   // For combo program, show MA + EKG + Phlebotomy exams
   const exams=db.exams.filter(e=>{
     if(e.isRetakeExam||e.is_trashed) return false;
-    if(prog==='Medical Assistant + Phlebotomy + EKG'){
-      return e.program==='Medical Assistant + Phlebotomy + EKG'||e.program==='EKG'||e.program==='Phlebotomy'||!e.program;
-    }
-    return e.program===prog||(prog==='General'&&!e.program);
+    return examBelongsToProgram(e.program,prog);
   });
-  const subs=db.submissions.filter(s=>studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program));
-  const studentCount=new Set(subs.map(s=>s.studentEmail)).size;
+  const subs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
+  const studentEmails=new Set(subs.map(s=>s.studentEmail.toLowerCase()));
+  (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog))
+    .forEach(s=>studentEmails.add(s.email.toLowerCase()));
+  const studentCount=studentEmails.size;
 
   // Update stats
   const statsEl=document.getElementById('prog-detail-stats');
@@ -1705,14 +1732,12 @@ function renderProgGrades(el,prog,subs){
       studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program};
   });
   db_manualGrades.filter(g=>{
-    const tp=studentToTeacher(g.program||'');
-    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(g.program||'').includes('Medical Assistant'));
+    return studentBelongsToProgram(g.program,prog);
   }).forEach(g=>{
     if(!studentMap[g.email])studentMap[g.email]={name:g.name,email:g.email,program:g.program};
   });
   (db_students||[]).filter(s=>{
-    const tp=studentToTeacher(s.programs||'');
-    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(s.programs||'').includes('Medical Assistant'));
+    return studentBelongsToProgram(s.programs,prog);
   }).forEach(s=>{
     if(!studentMap[s.email])studentMap[s.email]={name:s.name,email:s.email,program:s.programs||prog};
   });
@@ -1720,9 +1745,7 @@ function renderProgGrades(el,prog,subs){
   // Exams for this program
   const progExams=db.exams.filter(e=>{
     if(e.isRetakeExam||e.is_trashed) return false;
-    if(prog==='Medical Assistant + Phlebotomy + EKG')
-      return e.program==='Medical Assistant + Phlebotomy + EKG'||e.program==='EKG'||e.program==='Phlebotomy'||!e.program;
-    return (e.program||'')===(prog)||e.program==='';
+    return examBelongsToProgram(e.program,prog);
   }).sort((a,b)=>a.title.localeCompare(b.title));
 
   // Manual grade labels — each unique label is its own column
@@ -1730,8 +1753,7 @@ function renderProgGrades(el,prog,subs){
   const manualLabels=[]; // [{key, label, category}]
   const seenLabels=new Set();
   db_manualGrades.filter(g=>{
-    const tp=studentToTeacher(g.program||'');
-    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(g.program||'').includes('Medical Assistant'));
+    return studentBelongsToProgram(g.program,prog);
   }).forEach(g=>{
     const uid=g.category+'::'+g.label;
     if(!seenLabels.has(uid)){
@@ -2194,26 +2216,43 @@ function openManualGradeModal(prog){
 function populateMGStudentDropdown(prog){
   const sel=document.getElementById('mg-student-select');
   if(!sel) return;
+  const help=document.getElementById('mg-student-help');
   // Collect students from submissions + registered students for this program
   const studentMap={};
   db.submissions.filter(s=>{
-    const tp=studentToTeacher(s.program||'');
-    return tp===prog||prog===''||prog==='General';
-  }).forEach(s=>{ studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program}; });
+    return studentBelongsToProgram(s.program,prog)||prog==='';
+  }).forEach(s=>{ studentMap[s.studentEmail.toLowerCase()]={name:s.studentName,email:s.studentEmail,program:s.program}; });
   (db_students||[]).filter(s=>{
-    const tp=studentToTeacher(s.programs||'');
-    return tp===prog||prog===''||prog==='General';
-  }).forEach(s=>{ if(!studentMap[s.email]) studentMap[s.email]={name:s.name,email:s.email,program:s.programs}; });
+    return studentBelongsToProgram(s.programs,prog)||prog==='';
+  }).forEach(s=>{
+    const key=s.email.toLowerCase();
+    if(!studentMap[key]) studentMap[key]={name:s.name,email:s.email,program:s.programs};
+  });
 
   const students=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
-  sel.innerHTML='<option value="">— Select a student —</option>'+
-    students.map(s=>`<option value="${s.email}" data-name="${s.name}" data-prog="${s.program}">${s.name} (${s.program})</option>`).join('');
+  sel.replaceChildren();
+  sel.add(new Option(students.length?'— Select a student —':'— No students found for this program —',''));
+  students.forEach(s=>{
+    const opt=new Option(`${s.name} (${s.program})`,s.email);
+    opt.dataset.name=s.name;
+    opt.dataset.prog=s.program;
+    sel.add(opt);
+  });
+  sel.disabled=!students.length;
+  if(help) help.textContent=students.length
+    ? `${students.length} student${students.length!==1?'s':''} available for ${prog||'all programs'}.`
+    : `No registered students or submissions were found for ${prog||'this program'}.`;
 }
 
 function fillManualGradeStudent(){
   const sel=document.getElementById('mg-student-select');
   const opt=sel.options[sel.selectedIndex];
-  if(!opt||!opt.value) return;
+  if(!opt||!opt.value){
+    document.getElementById('mg-email').value='';
+    document.getElementById('mg-name').value='';
+    document.getElementById('mg-program').value='';
+    return;
+  }
   document.getElementById('mg-email').value=opt.value;
   document.getElementById('mg-name').value=opt.dataset.name||'';
   document.getElementById('mg-program').value=opt.dataset.prog||'';
@@ -2253,6 +2292,94 @@ function openEditStudentFromGradebook(email){
   }
 }
 
+function openEditStudent(sid){
+  const sub=db.submissions.find(s=>s.id===sid);
+  if(!sub){ toast('Student submission not found.'); return; }
+  document.getElementById('edit-stu-name').value=sub.studentName||'';
+  document.getElementById('edit-stu-email').value=sub.studentEmail||'';
+  document.getElementById('edit-stu-program').value=sub.program||'';
+  document.getElementById('edit-stu-sid').value=sid;
+  openModal('modal-edit-student');
+}
+
+async function saveStudentEdit(){
+  const sid=document.getElementById('edit-stu-sid').value;
+  const name=document.getElementById('edit-stu-name').value.trim();
+  const email=document.getElementById('edit-stu-email').value.trim().toLowerCase();
+  const program=document.getElementById('edit-stu-program').value;
+  if(!name||!email||!email.includes('@')||!program){
+    toast('Please enter a valid name, email, and program.');
+    return;
+  }
+
+  const directStudent=sid.startsWith('student:');
+  const sourceSub=directStudent?null:db.submissions.find(s=>s.id===sid);
+  const oldEmail=directStudent?sid.slice(8):(sourceSub&&sourceSub.studentEmail);
+  if(!oldEmail){ toast('Student record not found.'); return; }
+  const oldEmailLow=oldEmail.toLowerCase();
+  const registered=db_students.find(s=>s.email.toLowerCase()===oldEmailLow);
+  const changedExams=[];
+
+  try{
+    await sbFetch('ep_submissions?student_email=eq.'+encodeURIComponent(oldEmail),{
+      method:'PATCH', prefer:'return=minimal',
+      body:{student_name:name,student_email:email,program}
+    });
+    await sbFetch('ep_manual_grades?email=eq.'+encodeURIComponent(oldEmail),{
+      method:'PATCH', prefer:'return=minimal',
+      body:{name,email,program}
+    });
+    if(email!==oldEmailLow){
+      await sbFetch('ep_students?email=eq.'+encodeURIComponent(oldEmail),{
+        method:'DELETE', prefer:'return=minimal'
+      });
+    }
+    await sbFetch('ep_students',{
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:{
+        email,name,programs:program,
+        registered_at:(registered&&registered.registeredAt)||new Date().toISOString(),
+        integrity_passed:registered?!!registered.integrityPassed:true
+      }
+    });
+
+    db.submissions.forEach(s=>{
+      if(s.studentEmail.toLowerCase()===oldEmailLow){
+        s.studentName=name; s.studentEmail=email; s.program=program;
+      }
+    });
+    db_manualGrades.forEach(g=>{
+      if(g.email.toLowerCase()===oldEmailLow){
+        g.name=name; g.email=email; g.program=program;
+      }
+    });
+    db_students=db_students.filter(s=>s.email.toLowerCase()!==oldEmailLow);
+    db_students.push({
+      email,name,programs:program,
+      registeredAt:(registered&&registered.registeredAt)||new Date().toISOString(),
+      integrityPassed:registered?!!registered.integrityPassed:true
+    });
+    db.exams.forEach(exam=>{
+      const attempts=exam.studentAttempts||{};
+      const key=Object.keys(attempts).find(k=>k.toLowerCase()===oldEmailLow);
+      if(key && key!==email){
+        attempts[email]=attempts[key];
+        delete attempts[key];
+        changedExams.push(exam);
+      }
+    });
+    await Promise.all(changedExams.map(exam=>syncExam(exam)));
+    saveDB();
+    closeModal('modal-edit-student');
+    toast('Student information updated.');
+    if(currentProgram) renderProgTab(); else renderDashboard();
+  }catch(e){
+    console.error('Student update failed:',e);
+    toast('Could not save student changes: '+e.message);
+  }
+}
+
 async function saveManualGrade(){
   // First try to get from dropdown selection, then fall back to hidden fields
   const sel=document.getElementById('mg-student-select');
@@ -2281,8 +2408,12 @@ async function saveManualGrade(){
   // Sync to Supabase
   await sbFetch('ep_manual_grades',{
     method:'POST', headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:entry
-  }).catch(()=>{});
+    body:{
+      id:entry.id,email:entry.email,name:entry.name,program:entry.program,
+      category:entry.category,label:entry.label,grade:entry.grade,
+      max_grade:entry.maxGrade,date:entry.date
+    }
+  }).catch(e=>console.warn('Manual grade sync error:',e));
 
   closeModal('modal-manual-grade');
   toast('✓ Grade saved for '+name+'.');
@@ -2324,25 +2455,6 @@ function closeDashDetail(){
     renderDashboard();
   }
 }
-
-// Sync background
-async function syncFromSupabase(){
-  try{
-    const [exams,subs]=await Promise.all([
-      sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
-      sbFetch('ep_submissions?order=date_taken.asc')
-    ]);
-    db.exams=(exams||[]).map(e=>({id:e.id,title:e.title,program:e.program||'',examType:e.exam_type||'exam',teacherEmail:e.teacher_email||'',open:e.open,questions:e.questions||[],studentAttempts:e.student_attempts||{},allowedEmails:e.allowed_emails||[],isRetakeExam:e.is_retake_exam||false,createdFrom:e.created_from||'',createdAt:e.created_at}));
-    db.submissions=(subs||[]).map(s=>({id:s.id,examId:s.exam_id,examTitle:s.exam_title||'',studentName:s.student_name,studentEmail:s.student_email,program:s.program,score:s.score,total:s.total,percentage:s.percentage,detail:s.detail||[],attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,attemptsLeft:s.attempts_left||0,date:s.date_taken}));
-    const sid=(document.querySelector('.screen.active')||{}).id;
-    if(sid==='screen-teacher'){
-      if(teacherTab==='dashboard'&&!currentProgram) renderDashboard();
-      else if(currentProgram) renderProgTab();
-    } else if(sid==='screen-student-exams'&&ss._portalName)
-      _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
-  }catch(e){}
-}
-
 
 // ═══════════════════════════════════════════════════════════════
 //  EXAM CRUD
@@ -3257,12 +3369,14 @@ function checkDirectLink(){
 // Background sync — runs every 30s to pick up changes from other devices
 async function syncFromSupabase(){
   try{
-    const [exams, subs] = await Promise.all([
+    const [exams, subs, students] = await Promise.all([
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
-      sbFetch('ep_submissions?order=date_taken.asc')
+      sbFetch('ep_submissions?order=date_taken.asc'),
+      sbFetch('ep_students?order=registered_at.asc').catch(()=>[])
     ]);
     db.exams=(exams||[]).map(e=>({
       id:e.id,title:e.title,program:e.program||'',
+      examType:e.exam_type||'exam',
       teacherEmail:e.teacher_email||'',open:e.open,
       questions:e.questions||[],studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -3277,9 +3391,14 @@ async function syncFromSupabase(){
       attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,
       attemptsLeft:s.attempts_left||0,date:s.date_taken
     }));
+    db_students=(students||[]).map(s=>({
+      email:s.email,name:s.name,programs:s.programs||'',
+      registeredAt:s.registered_at,integrityPassed:s.integrity_passed
+    }));
     // Silently refresh current view
     const sid=(document.querySelector('.screen.active')||{}).id;
-    if(sid==='screen-teacher' && teacherTab==='dashboard') renderDashboard();
+    if(sid==='screen-teacher' && teacherTab==='dashboard' && !currentProgram) renderDashboard();
+    else if(sid==='screen-teacher' && currentProgram) renderProgTab();
     else if(sid==='screen-student-exams' && ss._portalName)
       _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
   }catch(e){ /* silent fail */ }
