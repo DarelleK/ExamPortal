@@ -1046,9 +1046,40 @@ async function sbFetch(path, opts={}){
 }
 
 // Local cache — always use this for rendering
+const MAX_ATTEMPTS = 3;
+
 let db = {exams:[], submissions:[], settings:{}, pin:'123456', trash:[]};
 let db_students = []; // registered students
 let dbLoaded = false;
+
+function getAttemptRecord(exam, email){
+  if(!exam.studentAttempts) exam.studentAttempts = {};
+
+  const emailKey = String(email || '').trim();
+  const matchingKey = Object.keys(exam.studentAttempts)
+    .find(key => key.toLowerCase() === emailKey.toLowerCase());
+  const recordKey = matchingKey || emailKey;
+
+  if(!exam.studentAttempts[recordKey]){
+    exam.studentAttempts[recordKey] = {
+      count: 0,
+      max: MAX_ATTEMPTS,
+      bestScore: null,
+      bestDate: null,
+      history: [],
+      locked: false
+    };
+  }
+
+  const rec = exam.studentAttempts[recordKey];
+  if(!Number.isFinite(rec.count)) rec.count = 0;
+  if(!Number.isFinite(rec.max) || rec.max < 1) rec.max = MAX_ATTEMPTS;
+  if(!Array.isArray(rec.history)) rec.history = [];
+  if(rec.bestScore === undefined) rec.bestScore = null;
+  if(rec.bestDate === undefined) rec.bestDate = null;
+  rec.locked = !!rec.locked || rec.count >= rec.max;
+  return rec;
+}
 
 function saveDB(){
   // Sync to Supabase in background — non-blocking
@@ -1230,7 +1261,15 @@ let mainTab        = 'questions'; // 'questions' | 'subs'
 let editingQIndex  = null;
 
 // student session
-let ss = { name:'', email:'', program:'', examId:null, answers:{}, qOrder:[], curQ:0 };
+let ss = { name:'', email:'', program:'', examId:null, answers:{}, qOrder:[], curQ:0,
+  // Portal session — restored from sessionStorage on reload
+  get _portalName(){ return sessionStorage.getItem('ep_pname')||''; },
+  set _portalName(v){ sessionStorage.setItem('ep_pname',v||''); },
+  get _portalEmail(){ return sessionStorage.getItem('ep_pemail')||''; },
+  set _portalEmail(v){ sessionStorage.setItem('ep_pemail',v||''); },
+  get _portalProgram(){ return sessionStorage.getItem('ep_pprog')||''; },
+  set _portalProgram(v){ sessionStorage.setItem('ep_pprog',v||''); },
+};
 
 // retake
 let retakeSub = null;
@@ -1435,7 +1474,7 @@ function renderDashboard(){
   const grid = document.getElementById('program-grid');
   if(!grid) return;
 
-  const allProgs = [...TEACHER_PROGRAMS, 'General'];
+  const allProgs = [...TEACHER_PROGRAMS]; // No 'General' card
   grid.innerHTML = allProgs.map(prog=>{
     const examCount = db.exams.filter(e=>!e.isRetakeExam && !e.is_trashed && (e.program===prog||(prog==='General'&&!e.program))).length;
     const subCount  = db.submissions.filter(s=>studentToTeacher(s.program||'Other')===prog||(prog==='General'&&!s.program)).length;
@@ -1657,84 +1696,94 @@ function renderProgGrades(el,prog,subs){
   const weights=getWeightsForProg(prog);
   const hasShifts=['Nurse Aide','Medication Aide'].includes(prog);
   let currentShift=null;
-  let selectedStudent=null; // null = program view, email = individual view
+  let selectedStudent=null;
 
-  // Collect ALL students — from submissions AND from ep_students registration
+  // Collect ALL students
   const studentMap={};
-  // From submissions
   subs.forEach(s=>{
     if(!studentMap[s.studentEmail])
       studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program};
   });
-  // From manual grades
   db_manualGrades.filter(g=>{
     const tp=studentToTeacher(g.program||'');
-    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&g.program&&g.program.includes('Medical Assistant'));
+    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(g.program||'').includes('Medical Assistant'));
   }).forEach(g=>{
     if(!studentMap[g.email])studentMap[g.email]={name:g.name,email:g.email,program:g.program};
   });
-  // From registered students
   (db_students||[]).filter(s=>{
     const tp=studentToTeacher(s.programs||'');
-    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&s.programs&&s.programs.includes('Medical Assistant'));
+    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(s.programs||'').includes('Medical Assistant'));
   }).forEach(s=>{
     if(!studentMap[s.email])studentMap[s.email]={name:s.name,email:s.email,program:s.programs||prog};
   });
 
-  // Get all exams for this program, sorted by date
+  // Exams for this program
   const progExams=db.exams.filter(e=>{
     if(e.isRetakeExam||e.is_trashed) return false;
-    if(prog==='Medical Assistant + Phlebotomy + EKG'){
+    if(prog==='Medical Assistant + Phlebotomy + EKG')
       return e.program==='Medical Assistant + Phlebotomy + EKG'||e.program==='EKG'||e.program==='Phlebotomy'||!e.program;
-    }
-    const ep=e.program||'';
-    return ep===prog||ep==='';
+    return (e.program||'')===(prog)||e.program==='';
   }).sort((a,b)=>a.title.localeCompare(b.title));
 
-  // Manual grade categories
-  // Only show manual grade columns that have actual data for ANY student in this program
-  // Never show a column just because it is in grade weights — teacher adds grades manually
-  const allManualCatKeys=['workbook','skills','review','final'];
-  const manualCats=allManualCatKeys.filter(key=>{
-    return db_manualGrades.some(g=>{
-      const tp=studentToTeacher(g.program||'');
-      return g.category===key&&(tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&g.program&&g.program.includes('Medical Assistant')));
-    });
-  }).map(key=>GRADE_CATEGORIES.find(c=>c.key===key)).filter(Boolean);
+  // Manual grade labels — each unique label is its own column
+  // e.g. "Workbook 1", "Workbook 2", "Skills Week 3"
+  const manualLabels=[]; // [{key, label, category}]
+  const seenLabels=new Set();
+  db_manualGrades.filter(g=>{
+    const tp=studentToTeacher(g.program||'');
+    return tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&(g.program||'').includes('Medical Assistant'));
+  }).forEach(g=>{
+    const uid=g.category+'::'+g.label;
+    if(!seenLabels.has(uid)){
+      seenLabels.add(uid);
+      const cat=GRADE_CATEGORIES.find(c=>c.key===g.category);
+      manualLabels.push({uid,category:g.category,label:g.label,icon:cat?cat.icon:'📝'});
+    }
+  });
+  manualLabels.sort((a,b)=>a.label.localeCompare(b.label));
 
-  function getStudentGrades(email){
-    const eSubs=subs.filter(s=>s.studentEmail===email);
-    const manuals=db_manualGrades.filter(g=>g.email===email);
-    const grades={};
-    // Exam grades per exam
-    progExams.forEach(e=>{
-      const sub=eSubs.find(s=>s.examId===e.id);
-      if(sub) grades['exam_'+e.id]=sub.percentage;
-    });
-    // Manual grades per category
-    manualCats.forEach(w=>{
-      const mg=manuals.filter(g=>g.category===w.key);
-      if(mg.length) grades[w.key]=Math.round(mg.reduce((a,g)=>a+(g.grade/g.maxGrade*100),0)/mg.length);
-    });
-    return grades;
+  function getExamScore(email,examId){
+    return subs.find(s=>s.studentEmail===email&&s.examId===examId)?.percentage;
+  }
+  function getManualScore(email,category,label){
+    const mg=db_manualGrades.find(g=>g.email===email&&g.category===category&&g.label===label);
+    return mg?Math.round(mg.grade/mg.maxGrade*100):undefined;
   }
 
   function calcFinal(email){
     const enabled=weights.filter(w=>w.enabled);
     if(!enabled.length) return null;
-    const grades=getStudentGrades(email);
-    const eSubs=subs.filter(s=>s.studentEmail===email);
-    // Exam avg for 'exam' category
-    if(enabled.find(w=>w.key==='exam')){
-      const examScores=progExams.filter(e=>e.examType==='exam'||!e.examType).map(e=>{
-        const sub=eSubs.find(s=>s.examId===e.id); return sub?sub.percentage:null;
-      }).filter(v=>v!==null);
-      if(examScores.length) grades.exam=Math.round(examScores.reduce((a,b)=>a+b,0)/examScores.length);
-    }
     const total=enabled.reduce((a,w)=>a+w.weight,0);
     if(!total) return null;
     let score=0,used=0;
-    enabled.forEach(w=>{if(grades[w.key]!==undefined){score+=grades[w.key]*(w.weight/total);used+=w.weight;}});
+    enabled.forEach(w=>{
+      let val;
+      if(w.key==='exam'){
+        const scores=progExams.filter(e=>!e.examType||e.examType==='exam')
+          .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
+        if(scores.length) val=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
+      } else if(w.key==='final'){
+        const scores=progExams.filter(e=>e.examType==='final')
+          .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
+        const manScores=db_manualGrades.filter(g=>g.email===email&&g.category==='final')
+          .map(g=>Math.round(g.grade/g.maxGrade*100));
+        const all=[...scores,...manScores];
+        if(all.length) val=Math.round(all.reduce((a,b)=>a+b,0)/all.length);
+      } else if(w.key==='review'){
+        const scores=progExams.filter(e=>e.examType==='review')
+          .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
+        const manScores=db_manualGrades.filter(g=>g.email===email&&g.category==='review')
+          .map(g=>Math.round(g.grade/g.maxGrade*100));
+        const all=[...scores,...manScores];
+        if(all.length) val=Math.round(all.reduce((a,b)=>a+b,0)/all.length);
+      } else {
+        // workbook, skills
+        const manScores=db_manualGrades.filter(g=>g.email===email&&g.category===w.key)
+          .map(g=>Math.round(g.grade/g.maxGrade*100));
+        if(manScores.length) val=Math.round(manScores.reduce((a,b)=>a+b,0)/manScores.length);
+      }
+      if(val!==undefined){score+=val*(w.weight/total);used+=w.weight;}
+    });
     return used?Math.round(score*(total/used)):null;
   }
 
@@ -1745,53 +1794,52 @@ function renderProgGrades(el,prog,subs){
     const manuals=db_manualGrades.filter(g=>g.email===email).sort((a,b)=>new Date(a.date)-new Date(b.date));
     const final=calcFinal(email);
     const examMap={};db.exams.forEach(e=>examMap[e.id]=e);
+    const typeLabel={exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final',workbook:'📚 Workbook',skills:'🏋 Skills'};
 
     const examRows=eSubs.map(s=>{
       const ex=examMap[s.examId];
-      const typeLabel=ex?({exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final',workbook:'📚 Workbook'}[ex.examType]||'📝 Exam'):'📝 Exam';
       return `<tr>
-        <td>${typeLabel}</td>
+        <td>${typeLabel[ex?.examType||'exam']||'📝 Exam'}</td>
         <td style="font-weight:500;">${ex?ex.title:s.examTitle||'—'}</td>
         <td style="text-align:center;">${s.score}/${s.total}</td>
         <td style="text-align:center;"><span class="grade-badge ${s.percentage>=80?'grade-pass':'grade-fail'}">${s.percentage}%</span></td>
         <td style="font-size:12px;color:var(--muted);">${new Date(s.date).toLocaleDateString()}</td>
-        <td style="font-size:11px;color:var(--muted);">${s.attemptsUsed||1}/${s.attemptsMax||3}</td>
       </tr>`;
     }).join('');
 
     const manualRows=manuals.map(g=>{
       const pct=Math.round(g.grade/g.maxGrade*100);
-      const catLabel={exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final',workbook:'📚 Workbook',skills:'🏋 Skills'}[g.category]||g.category;
       return `<tr>
-        <td>${catLabel}</td>
+        <td>${typeLabel[g.category]||g.category}</td>
         <td style="font-weight:500;">${g.label}</td>
         <td style="text-align:center;">${g.grade}/${g.maxGrade}</td>
         <td style="text-align:center;"><span class="grade-badge ${pct>=80?'grade-pass':'grade-fail'}">${pct}%</span></td>
-        <td style="font-size:12px;color:var(--muted);">${new Date(g.date).toLocaleDateString()}</td>
-        <td></td>
+        <td style="font-size:12px;color:var(--muted);">${new Date(g.date).toLocaleDateString()}
+          <button class="btn btn-ghost btn-xs" style="color:var(--red);margin-left:4px;" onclick="deleteManualGrade('${g.id}','${prog}')">✕</button>
+        </td>
       </tr>`;
     }).join('');
 
-    // Store reference for back button
-    const backFn = ()=>{ selectedStudent=null; renderProgTab(); };
+    const backFn=()=>{ selectedStudent=null; renderProgTab(); };
     el.innerHTML=`
       <div id="prog-grades-printable">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
           <button class="btn btn-outline btn-sm" id="back-to-class-btn">← Back to Class</button>
           <div style="display:flex;gap:8px;">
             <button class="btn btn-outline btn-sm" onclick="openEditStudentFromGradebook('${email}')">✏ Edit Info</button>
-            <button class="btn btn-outline btn-sm" onclick="openManualGradeForStudent('skills','${email}','${st.name}','${st.program}')">+ Add Grade</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteStudentConfirm('${email}')">🗑 Delete Student</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddManualGradeForStudent('${email}','${st?.name||''}','${st?.program||prog}')">+ Add Grade</button>
             <button class="btn btn-outline btn-sm" onclick="printGradesForProg('${prog}')">🖨 Print</button>
           </div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:18px;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
             <div>
-              <div style="font-size:20px;font-family:'DM Serif Display',serif;margin-bottom:3px;">${st.name}</div>
-              <div style="font-size:13px;color:var(--muted);">${st.program} · ${st.email}</div>
+              <div style="font-size:20px;font-family:'DM Serif Display',serif;margin-bottom:3px;">${st?.name||email}</div>
+              <div style="font-size:13px;color:var(--muted);">${st?.program||''} · ${email}</div>
             </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
-              <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams Taken</div></div>
+              <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams</div></div>
               <div class="stat-pill"><div class="val">${eSubs.filter(s=>s.percentage>=80).length}</div><div class="lbl">Passed</div></div>
               ${final!==null?`<div class="stat-pill"><div class="val" style="color:${final>=80?'var(--green)':'var(--accent)'};">${final}%</div><div class="lbl">Final Grade</div></div>`:''}
             </div>
@@ -1799,96 +1847,89 @@ function renderProgGrades(el,prog,subs){
         </div>
         ${eSubs.length||manuals.length?`
         <table class="sub-table" style="width:100%;">
-          <thead><tr><th>Type</th><th>Title</th><th>Score</th><th>Grade</th><th>Date</th><th>Attempts</th></tr></thead>
+          <thead><tr><th>Type</th><th>Title</th><th>Score</th><th>Grade</th><th>Date</th></tr></thead>
           <tbody>${examRows}${manualRows}</tbody>
-        </table>`:'<div class="empty"><div class="empty-icon">📭</div>No grades yet for this student.</div>'}
+        </table>`:'<div class="empty"><div class="empty-icon">📭</div>No grades yet.</div>'}
       </div>`;
-
-    // Wire back button properly
-    const backBtn=el.querySelector('#back-to-class-btn');
-    if(backBtn) backBtn.addEventListener('click', backFn);
+    el.querySelector('#back-to-class-btn')?.addEventListener('click',backFn);
   }
 
-  // ── Program view (all students) ──
+  // ── Program view ──
   function renderProgramView(students){
-    // Build exam columns: each exam in this program
-    const typeLabel={exam:'📝',review:'🔍',final:'🎓',workbook:'📚',skills:'🏋'};
-    const examCols=progExams.map(e=>({
-      id:e.id, title:e.title,
-      type:typeLabel[e.examType||'exam']||'📝',
-      shortTitle:e.title.length>18?e.title.slice(0,16)+'…':e.title
-    }));
-    const manualColKeys=manualCats.map(w=>({key:w.key,label:w.icon+' '+w.label}));
+    // Build columns: exam cols + manual label cols
+    const examCols=progExams.map(e=>({id:'ex_'+e.id,title:e.title,examId:e.id,
+      icon:{exam:'📝',review:'🔍',final:'🎓',workbook:'📚',skills:'🏋'}[e.examType||'exam']||'📝'}));
+    const manualCols=manualLabels.map(m=>({id:'ml_'+m.uid,uid:m.uid,category:m.category,label:m.label,icon:m.icon}));
+    const allCols=[...examCols,...manualCols];
 
-    const allCols=[...examCols.map(e=>({id:'ex_'+e.id,label:e.type+' '+e.shortTitle,title:e.title})),
-                   ...manualColKeys.map(w=>({id:'mg_'+w.key,label:w.label}))];
-
-    const headers=allCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.title||''}">${c.label}</th>`).join('');
+    const examHeaders=examCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.title}">${c.icon} ${c.title.length>14?c.title.slice(0,12)+'…':c.title}</th>`).join('');
+    const manualHeaders=manualCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.label}">
+      ${c.icon} ${c.label.length>14?c.label.slice(0,12)+'…':c.label}
+      <button style="display:block;margin:2px auto 0;background:none;border:none;color:var(--muted);cursor:pointer;font-size:9px;" onclick="deleteManualLabelCol('${c.category}','${c.label}','${prog}')">✕ del col</button>
+    </th>`).join('');
 
     const rows=students.map(st=>{
-      const grades=getStudentGrades(st.email);
       const final=calcFinal(st.email);
-      const cells=allCols.map(col=>{
-        if(col.id.startsWith('ex_')){
-          const eid=col.id.replace('ex_','');
-          const v=grades['exam_'+eid];
-          if(v===undefined) return `<td style="text-align:center;color:var(--muted);font-size:11px;">—</td>`;
-          // Click to edit exam grade
-          return `<td style="text-align:center;" id="gc-${st.email.replace(/[@.]/g,'_')}-${eid}">
-            <span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;" 
-              title="Click to edit" onclick="inlineEditGrade(this,'${st.email}','${eid}',${v},'exam')">${v}%</span>
-          </td>`;
-        } else {
-          const key=col.id.replace('mg_','');
-          const v=grades[key];
-          if(v===undefined) return `<td style="text-align:center;">
-            <span style="font-size:11px;color:var(--muted);cursor:pointer;text-decoration:underline dotted;" 
-              data-email="${st.email}" data-cat="${key}" data-name="${st.name}" data-prog="${st.program}">+ Add</span>
-          </td>`;
-          return `<td style="text-align:center;"><span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;"
-            data-email="${st.email}" data-cat="${key}" data-name="${st.name}" data-prog="${st.program}">${v}%</span></td>`;
-        }
+      const examCells=examCols.map(c=>{
+        const v=getExamScore(st.email,c.examId);
+        if(v===undefined) return `<td style="text-align:center;">
+          <span style="color:var(--muted);font-size:12px;cursor:pointer;" title="Click to enter paper score"
+            onclick="enterPaperScore('${st.email}','${st.name}','${c.examId}','${c.title}','${prog}')">—</span>
+        </td>`;
+        return `<td style="text-align:center;">
+          <span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;"
+            onclick="inlineEditGrade(this,'${st.email}','${c.examId}',${v},'exam')">${v}%</span>
+        </td>`;
       }).join('');
+
+      const manualCells=manualCols.map(c=>{
+        const v=getManualScore(st.email,c.category,c.label);
+        if(v===undefined) return `<td style="text-align:center;">
+          <span style="color:var(--muted);font-size:12px;cursor:pointer;"
+            onclick="openAddManualGradeForStudentLabel('${st.email}','${st.name}','${st.program}','${c.category}','${c.label}')">—</span>
+        </td>`;
+        return `<td style="text-align:center;">
+          <span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;"
+            onclick="openAddManualGradeForStudentLabel('${st.email}','${st.name}','${st.program}','${c.category}','${c.label}')">${v}%</span>
+        </td>`;
+      }).join('');
+
       return `<tr>
-        <td><button class="btn btn-ghost btn-sm" style="text-align:left;font-weight:500;padding:2px 6px;" data-email="${st.email}">${st.name}</button>
-          <div style="font-size:11px;color:var(--muted);">${st.program}</div></td>
-        ${cells}
-        <td style="text-align:center;font-weight:600;">${final!==null?`<span class="grade-badge ${final>=80?'grade-pass':'grade-fail'}">${final}%</span>`:'—'}</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" style="text-align:left;font-weight:500;padding:2px 6px;" data-email="${st.email}">${st.name}</button>
+          <div style="font-size:11px;color:var(--muted);">${st.program}</div>
+        </td>
+        ${examCells}${manualCells}
+        <td style="text-align:center;">${final!==null?`<span class="grade-badge ${final>=80?'grade-pass':'grade-fail'}">${final}%</span>`:'—'}</td>
       </tr>`;
     }).join('');
 
+    const shiftBtns=hasShifts?`
+      <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
+      ${['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening'].filter(s=>s.startsWith(prog)).map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}`:'';
+
     el.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          ${hasShifts?`
-            <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
-            ${['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening'].filter(s=>s.startsWith(prog)).map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
-          `:''}
-        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">${shiftBtns}</div>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-outline btn-sm" onclick="openGradeWeightsModal('${prog}')">⚙ Weights</button>
-          <button class="btn btn-primary btn-sm" onclick="openManualGradeModal('${prog}')">+ Add Grade</button>
+          <button class="btn btn-primary btn-sm" onclick="openAddManualGradeModal('${prog}')">+ Add Grade</button>
           <button class="btn btn-outline btn-sm" onclick="printGradesForProg('${prog}')">🖨 Print</button>
         </div>
       </div>
       <div id="prog-grades-printable" style="overflow-x:auto;">
         <table class="sub-table" style="width:100%;min-width:400px;">
-          <thead><tr><th>Student</th>${headers}<th style="text-align:center;">Final</th></tr></thead>
+          <thead><tr><th>Student</th>${examHeaders}${manualHeaders}<th style="text-align:center;">Final</th></tr></thead>
           <tbody>${rows||'<tr><td colspan="99" style="text-align:center;color:var(--muted);padding:20px;">No students yet.</td></tr>'}</tbody>
         </table>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;">💡 Click a student name to see their individual grades. Click any grade to edit.</div>`;
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;">💡 Click — to enter a paper score. Click any grade to edit.</div>`;
 
-    // Wire student name clicks → individual view
+    // Wire student name clicks
     el.querySelectorAll('[data-email]').forEach(btn=>{
-      if(btn.tagName==='BUTTON'){
-        btn.addEventListener('click',()=>{ selectedStudent=btn.dataset.email; renderStudentView(btn.dataset.email); });
-      } else {
-        // Grade cell click → edit
-        btn.addEventListener('click',()=>openManualGradeForStudent(btn.dataset.cat,btn.dataset.email,btn.dataset.name,btn.dataset.prog));
-      }
+      if(btn.tagName==='BUTTON') btn.addEventListener('click',()=>{selectedStudent=btn.dataset.email;renderStudentView(btn.dataset.email);});
     });
-    // Shift filter
+    // Wire shift filter
     if(hasShifts) el.querySelectorAll('[data-shift]').forEach(btn=>{
       btn.addEventListener('click',()=>{
         currentShift=btn.dataset.shift||null;
@@ -1903,13 +1944,120 @@ function renderProgGrades(el,prog,subs){
   else renderProgramView(allStudents);
 }
 
-// ── Inline grade editing ──
-function inlineEditGrade(spanEl, email, examId, currentPct, type){
+// ── Enter paper score for exam column ──
+function enterPaperScore(email,name,examId,examTitle,prog){
+  const exam=db.exams.find(e=>e.id===examId);
+  if(!exam) return;
+  const pct=prompt('Enter paper score for '+name+' on "'+examTitle+'" (0-100):');
+  if(pct===null) return;
+  const pctNum=parseInt(pct);
+  if(isNaN(pctNum)||pctNum<0||pctNum>100){ toast('Enter a valid percentage (0-100).'); return; }
+  const score=Math.round(pctNum*(exam.questions.length||10)/100);
+  const sub={
+    id:Date.now().toString(), examId, examTitle,
+    studentName:name, studentEmail:email, program:prog,
+    score, total:exam.questions.length||0, percentage:pctNum,
+    detail:[], attemptsUsed:1, attemptsMax:3, attemptsLeft:0,
+    date:new Date().toISOString()
+  };
+  const idx=db.submissions.findIndex(s=>s.studentEmail===email&&s.examId===examId);
+  if(idx>=0) db.submissions[idx]=sub; else db.submissions.push(sub);
+  saveDB(); syncSubmission(sub).catch(()=>{});
+  toast('✓ Paper score of '+pctNum+'% saved for '+name);
+  renderProgTab();
+}
+
+// ── Open manual grade modal for a program ──
+function openAddManualGradeModal(prog){
+  document.getElementById('mg-id').value='';
+  document.getElementById('mg-email').value='';
+  document.getElementById('mg-name').value='';
+  document.getElementById('mg-program').value='';
+  document.getElementById('mg-category').value='workbook';
+  document.getElementById('mg-label').value='';
+  document.getElementById('mg-grade').value='';
+  document.getElementById('mg-max').value='100';
+  populateMGStudentDropdown(prog);
+  openModal('modal-manual-grade');
+}
+
+// ── Open manual grade for specific student ──
+function openAddManualGradeForStudent(email,name,program){
+  document.getElementById('mg-id').value='';
+  document.getElementById('mg-email').value=email;
+  document.getElementById('mg-name').value=name;
+  document.getElementById('mg-program').value=program;
+  document.getElementById('mg-category').value='skills';
+  document.getElementById('mg-label').value='';
+  document.getElementById('mg-grade').value='';
+  document.getElementById('mg-max').value='100';
+  populateMGStudentDropdown(studentToTeacher(program));
+  const sel=document.getElementById('mg-student-select');
+  if(sel) sel.value=email;
+  openModal('modal-manual-grade');
+}
+
+// ── Open manual grade for specific student + label (edit existing) ──
+function openAddManualGradeForStudentLabel(email,name,program,category,label){
+  const existing=db_manualGrades.find(g=>g.email===email&&g.category===category&&g.label===label);
+  document.getElementById('mg-id').value=existing?existing.id:'';
+  document.getElementById('mg-email').value=email;
+  document.getElementById('mg-name').value=name;
+  document.getElementById('mg-program').value=program;
+  document.getElementById('mg-category').value=category;
+  document.getElementById('mg-label').value=label;
+  document.getElementById('mg-grade').value=existing?existing.grade:'';
+  document.getElementById('mg-max').value=existing?existing.maxGrade:100;
+  populateMGStudentDropdown(studentToTeacher(program));
+  const sel=document.getElementById('mg-student-select');
+  if(sel) sel.value=email;
+  openModal('modal-manual-grade');
+}
+
+// ── Delete single manual grade ──
+async function deleteManualGrade(id,prog){
+  if(!confirm('Delete this grade entry?')) return;
+  db_manualGrades=db_manualGrades.filter(g=>g.id!==id);
+  await sbFetch('ep_manual_grades?id=eq.'+id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  toast('Grade deleted.');
+  renderProgTab();
+}
+
+// ── Delete whole manual label column ──
+async function deleteManualLabelCol(category,label,prog){
+  if(!confirm('Delete all "'+label+'" grades? This cannot be undone.')) return;
+  const toDelete=db_manualGrades.filter(g=>g.category===category&&g.label===label);
+  db_manualGrades=db_manualGrades.filter(g=>!(g.category===category&&g.label===label));
+  for(const g of toDelete){
+    await sbFetch('ep_manual_grades?id=eq.'+g.id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  }
+  toast('Column "'+label+'" deleted.');
+  renderProgTab();
+}
+
+// ── Delete student account ──
+async function deleteStudentConfirm(email){
+  const st=db_students.find(s=>s.email===email);
+  const name=st?st.name:email;
+  if(!confirm('Delete student account for '+name+'?\n\nThis removes their registration, all submissions, and attempt records. This cannot be undone.')) return;
+  db_students=db_students.filter(s=>s.email!==email);
+  const subIds=db.submissions.filter(s=>s.studentEmail===email).map(s=>s.id);
+  db.submissions=db.submissions.filter(s=>s.studentEmail!==email);
+  db.exams.forEach(e=>{ if(e.studentAttempts&&e.studentAttempts[email]) delete e.studentAttempts[email]; });
+  await sbFetch('ep_students?email=eq.'+encodeURIComponent(email),{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  for(const id of subIds){
+    await sbFetch('ep_submissions?id=eq.'+id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  }
+  saveDB();
+  toast('✓ Student '+name+' deleted.');
+  renderProgTab();
+}
+
+// ── Inline grade editing (click grade badge in gradebook) ──
+function inlineEditGrade(spanEl,email,examId,currentPct,type){
   const td=spanEl.parentElement;
   const sub=db.submissions.find(s=>s.studentEmail===email&&s.examId===examId);
   if(!sub){ toast('Submission not found.'); return; }
-
-  // Replace badge with input
   td.innerHTML=`<div style="display:flex;align-items:center;gap:4px;">
     <input type="number" min="0" max="100" value="${currentPct}" id="inline-grade-input"
       style="width:55px;padding:3px 6px;border:1.5px solid var(--accent);border-radius:5px;font-size:12px;text-align:center;"/>
@@ -1917,32 +2065,23 @@ function inlineEditGrade(spanEl, email, examId, currentPct, type){
     <button id="inline-save-btn" style="background:var(--accent);color:#fff;border:none;padding:3px 8px;border-radius:5px;cursor:pointer;font-size:11px;">✓</button>
     <button id="inline-cancel-btn" style="background:none;border:1px solid var(--border);padding:3px 6px;border-radius:5px;cursor:pointer;font-size:11px;">✕</button>
   </div>`;
-
   const inp=document.getElementById('inline-grade-input');
   inp.focus(); inp.select();
-
   document.getElementById('inline-save-btn').onclick=()=>{
     const newPct=parseInt(inp.value);
     if(isNaN(newPct)||newPct<0||newPct>100){ toast('Enter a valid percentage (0-100).'); return; }
     if(newPct===currentPct){ renderProgTab(); return; }
-    // Confirm dialog
     if(!confirm('Change grade from '+currentPct+'% to '+newPct+'% for '+sub.studentName+'?')){ renderProgTab(); return; }
-    // Update submission
-    const newScore=Math.round(newPct*sub.total/100);
-    sub.percentage=newPct; sub.score=newScore;
-    // Update attempt best score too
+    sub.percentage=newPct; sub.score=Math.round(newPct*sub.total/100);
     const exam=db.exams.find(e=>e.id===examId);
-    if(exam&&exam.studentAttempts&&exam.studentAttempts[email]){
-      exam.studentAttempts[email].bestScore=newPct;
-    }
-    saveDB();
-    syncSubmission(sub).catch(()=>{});
+    if(exam&&exam.studentAttempts&&exam.studentAttempts[email]) exam.studentAttempts[email].bestScore=newPct;
+    saveDB(); syncSubmission(sub).catch(()=>{});
     if(exam) syncExam(exam).catch(()=>{});
     toast('✓ Grade updated to '+newPct+'%');
     renderProgTab();
   };
   document.getElementById('inline-cancel-btn').onclick=()=>renderProgTab();
-  inp.addEventListener('keydown',(e)=>{ if(e.key==='Enter') document.getElementById('inline-save-btn').click(); if(e.key==='Escape') renderProgTab(); });
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('inline-save-btn').click(); if(e.key==='Escape') renderProgTab(); });
 }
 
 function renderProgWeightSettings(el,prog){
@@ -2216,7 +2355,8 @@ function openNewExamModal(){
 function createExam(){
   const title   = document.getElementById('ne-title').value.trim();
   const program = document.getElementById('ne-program').value;
-  if(!title){ toast('Please enter a title.'); return; }
+  if(!title){ toast('⚠ Please enter an exam title.'); return; }
+  if(!program){ toast('⚠ Please select a program for this exam.'); return; }
   const examType = (document.getElementById('ne-type')||{value:'exam'}).value;
   const exam = { id: Date.now().toString(), title, program, examType:examType||'exam', teacherEmail:db.settings.teacherEmail||'', open:true, questions:[] };
   db.exams.push(exam); saveDB(); closeModal('modal-new-exam');
@@ -2662,6 +2802,7 @@ function qbGenerateExam(){
   const retakeFor = window._retakeFor || null;
 
   if(!title){  status.innerHTML='<span style="color:var(--accent);">⚠ Please enter an exam title.</span>'; return; }
+  if(!program){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a program.</span>'; return; }
 
   const bankVal = document.getElementById('qb-bank-select').value;
   if(!bankVal){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a question bank.</span>'; return; }
@@ -3369,6 +3510,7 @@ function goStudentPortal(){
   studentProgram = '';
   // Clear session
   ss._portalName=''; ss._portalEmail=''; ss._portalProgram='';
+  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog');
   ['sp-name','sp-email'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   const sp=document.getElementById('sp-program'); if(sp) sp.value='';
   const errEl=document.getElementById('sp-error'); if(errEl) errEl.textContent='';
@@ -3406,6 +3548,7 @@ let _fuzzyState=null;
 function goBackToPortal(){
   // Clear session so form resets properly
   ss._portalName=''; ss._portalEmail=''; ss._portalProgram='';
+  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog');
   const errEl=document.getElementById('confirm-error');
   if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
   showScreen('screen-student-portal');
