@@ -1091,6 +1091,7 @@ async function syncExam(exam){
     headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
     body:{
       id:exam.id, title:exam.title, program:exam.program||'',
+      exam_type:exam.examType||'exam',
       teacher_email:exam.teacherEmail||'', open:exam.open,
       questions:exam.questions, student_attempts:exam.studentAttempts||{},
       allowed_emails:exam.allowedEmails||[],
@@ -1691,7 +1692,15 @@ function renderProgGrades(el,prog,subs){
   }).sort((a,b)=>a.title.localeCompare(b.title));
 
   // Manual grade categories
-  const manualCats=weights.filter(w=>w.enabled&&(w.key==='workbook'||w.key==='skills'||w.key==='review'||w.key==='final'));
+  // Only show manual grade columns that have actual data for ANY student in this program
+  // Never show a column just because it is in grade weights — teacher adds grades manually
+  const allManualCatKeys=['workbook','skills','review','final'];
+  const manualCats=allManualCatKeys.filter(key=>{
+    return db_manualGrades.some(g=>{
+      const tp=studentToTeacher(g.program||'');
+      return g.category===key&&(tp===prog||(prog==='Medical Assistant + Phlebotomy + EKG'&&g.program&&g.program.includes('Medical Assistant')));
+    });
+  }).map(key=>GRADE_CATEGORIES.find(c=>c.key===key)).filter(Boolean);
 
   function getStudentGrades(email){
     const eSubs=subs.filter(s=>s.studentEmail===email);
@@ -1784,7 +1793,6 @@ function renderProgGrades(el,prog,subs){
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
               <div class="stat-pill"><div class="val">${eSubs.length}</div><div class="lbl">Exams Taken</div></div>
               <div class="stat-pill"><div class="val">${eSubs.filter(s=>s.percentage>=80).length}</div><div class="lbl">Passed</div></div>
-              ${eSubs.length?`<div class="stat-pill"><div class="val" style="color:${Math.round(eSubs.reduce((a,s)=>a+s.percentage,0)/eSubs.length)>=80?'var(--green)':'var(--accent)'};">${Math.round(eSubs.reduce((a,s)=>a+s.percentage,0)/eSubs.length)}%</div><div class="lbl">Avg Score</div></div>`:''}
               ${final!==null?`<div class="stat-pill"><div class="val" style="color:${final>=80?'var(--green)':'var(--accent)'};">${final}%</div><div class="lbl">Final Grade</div></div>`:''}
             </div>
           </div>
@@ -1825,7 +1833,11 @@ function renderProgGrades(el,prog,subs){
           const eid=col.id.replace('ex_','');
           const v=grades['exam_'+eid];
           if(v===undefined) return `<td style="text-align:center;color:var(--muted);font-size:11px;">—</td>`;
-          return `<td style="text-align:center;"><span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}">${v}%</span></td>`;
+          // Click to edit exam grade
+          return `<td style="text-align:center;" id="gc-${st.email.replace(/[@.]/g,'_')}-${eid}">
+            <span class="grade-badge ${v>=80?'grade-pass':'grade-fail'}" style="cursor:pointer;" 
+              title="Click to edit" onclick="inlineEditGrade(this,'${st.email}','${eid}',${v},'exam')">${v}%</span>
+          </td>`;
         } else {
           const key=col.id.replace('mg_','');
           const v=grades[key];
@@ -1889,6 +1901,48 @@ function renderProgGrades(el,prog,subs){
   const allStudents=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
   if(selectedStudent) renderStudentView(selectedStudent);
   else renderProgramView(allStudents);
+}
+
+// ── Inline grade editing ──
+function inlineEditGrade(spanEl, email, examId, currentPct, type){
+  const td=spanEl.parentElement;
+  const sub=db.submissions.find(s=>s.studentEmail===email&&s.examId===examId);
+  if(!sub){ toast('Submission not found.'); return; }
+
+  // Replace badge with input
+  td.innerHTML=`<div style="display:flex;align-items:center;gap:4px;">
+    <input type="number" min="0" max="100" value="${currentPct}" id="inline-grade-input"
+      style="width:55px;padding:3px 6px;border:1.5px solid var(--accent);border-radius:5px;font-size:12px;text-align:center;"/>
+    <span style="font-size:11px;color:var(--muted);">%</span>
+    <button id="inline-save-btn" style="background:var(--accent);color:#fff;border:none;padding:3px 8px;border-radius:5px;cursor:pointer;font-size:11px;">✓</button>
+    <button id="inline-cancel-btn" style="background:none;border:1px solid var(--border);padding:3px 6px;border-radius:5px;cursor:pointer;font-size:11px;">✕</button>
+  </div>`;
+
+  const inp=document.getElementById('inline-grade-input');
+  inp.focus(); inp.select();
+
+  document.getElementById('inline-save-btn').onclick=()=>{
+    const newPct=parseInt(inp.value);
+    if(isNaN(newPct)||newPct<0||newPct>100){ toast('Enter a valid percentage (0-100).'); return; }
+    if(newPct===currentPct){ renderProgTab(); return; }
+    // Confirm dialog
+    if(!confirm('Change grade from '+currentPct+'% to '+newPct+'% for '+sub.studentName+'?')){ renderProgTab(); return; }
+    // Update submission
+    const newScore=Math.round(newPct*sub.total/100);
+    sub.percentage=newPct; sub.score=newScore;
+    // Update attempt best score too
+    const exam=db.exams.find(e=>e.id===examId);
+    if(exam&&exam.studentAttempts&&exam.studentAttempts[email]){
+      exam.studentAttempts[email].bestScore=newPct;
+    }
+    saveDB();
+    syncSubmission(sub).catch(()=>{});
+    if(exam) syncExam(exam).catch(()=>{});
+    toast('✓ Grade updated to '+newPct+'%');
+    renderProgTab();
+  };
+  document.getElementById('inline-cancel-btn').onclick=()=>renderProgTab();
+  inp.addEventListener('keydown',(e)=>{ if(e.key==='Enter') document.getElementById('inline-save-btn').click(); if(e.key==='Escape') renderProgTab(); });
 }
 
 function renderProgWeightSettings(el,prog){
@@ -2061,6 +2115,14 @@ function openEditStudentFromGradebook(email){
 }
 
 async function saveManualGrade(){
+  // First try to get from dropdown selection, then fall back to hidden fields
+  const sel=document.getElementById('mg-student-select');
+  if(sel&&sel.value){
+    const opt=sel.options[sel.selectedIndex];
+    document.getElementById('mg-email').value=opt.value;
+    document.getElementById('mg-name').value=opt.dataset.name||'';
+    document.getElementById('mg-program').value=opt.dataset.prog||'';
+  }
   const email   =document.getElementById('mg-email').value.trim();
   const name    =document.getElementById('mg-name').value.trim();
   const program =document.getElementById('mg-program').value;
@@ -2131,7 +2193,7 @@ async function syncFromSupabase(){
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
       sbFetch('ep_submissions?order=date_taken.asc')
     ]);
-    db.exams=(exams||[]).map(e=>({id:e.id,title:e.title,program:e.program||'',teacherEmail:e.teacher_email||'',open:e.open,questions:e.questions||[],studentAttempts:e.student_attempts||{},allowedEmails:e.allowed_emails||[],isRetakeExam:e.is_retake_exam||false,createdFrom:e.created_from||'',createdAt:e.created_at}));
+    db.exams=(exams||[]).map(e=>({id:e.id,title:e.title,program:e.program||'',examType:e.exam_type||'exam',teacherEmail:e.teacher_email||'',open:e.open,questions:e.questions||[],studentAttempts:e.student_attempts||{},allowedEmails:e.allowed_emails||[],isRetakeExam:e.is_retake_exam||false,createdFrom:e.created_from||'',createdAt:e.created_at}));
     db.submissions=(subs||[]).map(s=>({id:s.id,examId:s.exam_id,examTitle:s.exam_title||'',studentName:s.student_name,studentEmail:s.student_email,program:s.program,score:s.score,total:s.total,percentage:s.percentage,detail:s.detail||[],attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,attemptsLeft:s.attempts_left||0,date:s.date_taken}));
     const sid=(document.querySelector('.screen.active')||{}).id;
     if(sid==='screen-teacher'){
@@ -3350,7 +3412,6 @@ function goBackToPortal(){
 }
 
 function proceedFromConfirm(){
-  // Clear any previous confirm error
   const confirmErr=document.getElementById('confirm-error');
   if(confirmErr){ confirmErr.style.display='none'; confirmErr.textContent=''; }
 
@@ -3359,55 +3420,26 @@ function proceedFromConfirm(){
   const program = ss._portalProgram;
 
   if(!name||!email||!program){
-    if(confirmErr){ confirmErr.style.display='block'; confirmErr.textContent='⚠ Something went wrong. Please go back and fill in your information again.'; }
+    if(confirmErr){ confirmErr.style.display='block'; confirmErr.textContent='⚠ Please go back and fill in your information.'; }
     return;
   }
 
   const emailLow = email.toLowerCase();
 
-  // Validate against existing records
+  // Only validate name if this email already has submissions (returning student with typo)
   const existingSub = db.submissions.find(s=>s.studentEmail.toLowerCase()===emailLow);
-  // Also check ep_students registered list
-  const existingStudent = db_students.find(s=>s.email.toLowerCase()===emailLow);
-  const existingRecord = existingSub || (existingStudent ? {studentName:existingStudent.name, program:existingStudent.programs} : null);
-
-  if(existingRecord){
-    const nameMatch = existingRecord.studentName.trim().toLowerCase()===name.toLowerCase();
-    // More lenient program match — just check base program matches
-    const storedBase = (existingRecord.program||'').replace(/ Morning| Evening/,'').toLowerCase();
-    const enteredBase = program.replace(/ Morning| Evening/,'').toLowerCase();
-    const progMatch = storedBase===enteredBase || storedBase.includes(enteredBase) || enteredBase.includes(storedBase) || storedBase==='' ;
-
+  if(existingSub){
+    const nameMatch = existingSub.studentName.trim().toLowerCase()===name.toLowerCase();
     if(!nameMatch){
       if(confirmErr){
         confirmErr.style.display='block';
-        confirmErr.innerHTML='⚠ The name <strong>'+name+'</strong> does not match our records for this email. Expected <strong>'+existingRecord.studentName+'</strong>.<br><br>Please go back and correct your name.';
-      }
-      return;
-    }
-    // Don't block on program mismatch — just warn
-    if(!progMatch && storedBase!==''){
-      // Allow through but note the mismatch — teacher can fix in gradebook
-      console.warn('Program mismatch for', email, ':', storedBase, 'vs', enteredBase);
-    }
-  }
-
-  // Also check fuzzy email match
-  const similar = findSimilarEmail(emailLow);
-  if(similar && similar!==emailLow){
-    const stored=db.submissions.find(s=>s.studentEmail.toLowerCase()===similar);
-    if(stored && !existingSub){
-      if(confirmErr){
-        confirmErr.style.display='block';
-        confirmErr.innerHTML='⚠ The email <strong>'+email+'</strong> looks similar to <strong>'+similar+'</strong>'+(stored?(' ('+stored.studentName+')'):'')+ ' already in our system.<br><br>'
-          +'<button onclick="_useSuggestedEmail(\''+similar+'\',\''+name+'\',\''+program+'\')" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:7px;cursor:pointer;font-size:12px;font-weight:500;margin-top:6px;">Yes, use '+similar+'</button>'
-          +' <button onclick="goBackToPortal()" style="background:none;border:1.5px solid var(--border);padding:6px 12px;border-radius:7px;cursor:pointer;font-size:12px;margin-top:6px;">No, keep my email</button>';
+        confirmErr.innerHTML='⚠ The name <strong>'+name+'</strong> does not match our records. Expected <strong>'+existingSub.studentName+'</strong>. Please fix your name or contact your teacher.';
       }
       return;
     }
   }
 
-  // All good — proceed
+  // Proceed — no other blocking
   _proceedToExams(name, email, program);
 }
 
