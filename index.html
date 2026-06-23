@@ -1009,11 +1009,26 @@ function studentBelongsToProgram(studentProgram, dashboardProgram){
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   if(!exam.program || exam.program==='') return true; // general
-  const ep = exam.program; // exam's program
+  const ep = exam.program;
   const isComboStudent = studentProg==='Medical Assistant + Phlebotomy + EKG';
+  const isShiftProg = ep==='Nurse Aide' || ep==='Medication Aide';
+
+  // For shift programs, check that the specific shift is open
+  if(isShiftProg){
+    const isMorning = studentProg.includes('Morning');
+    const isEvening = studentProg.includes('Evening');
+    const baseMatch = ep===studentToTeacher(studentProg);
+    if(!baseMatch) return false;
+    // If neither shift toggle is set, fall back to main open flag
+    if(!exam.openMorning && !exam.openEvening) return exam.open;
+    if(isMorning) return !!exam.openMorning;
+    if(isEvening) return !!exam.openEvening;
+    return exam.open;
+  }
+
   // Exact match
   if(ep===studentProg) return true;
-  // Base match (Morning/Evening)
+  // Base match (strips Morning/Evening)
   if(ep===studentToTeacher(studentProg)) return true;
   // Combo students see EKG, Phlebotomy, and Medical Assistant exams
   if(isComboStudent && (ep==='EKG'||ep==='Phlebotomy'||ep==='Medical Assistant + Phlebotomy + EKG')) return true;
@@ -1147,6 +1162,9 @@ async function syncExam(exam){
     body:{
       id:exam.id, title:exam.title, program:exam.program||'',
       exam_type:exam.examType||'exam',
+      allow_review:exam.allowReview||false,
+      open_morning:exam.openMorning||false,
+      open_evening:exam.openEvening||false,
       teacher_email:exam.teacherEmail||'', open:exam.open,
       questions:exam.questions, student_attempts:exam.studentAttempts||{},
       allowed_emails:exam.allowedEmails||[],
@@ -1208,6 +1226,9 @@ async function loadFromSupabase(){
     db.exams = (exams||[]).map(e=>({
       id:e.id, title:e.title, program:e.program||'',
       examType:e.exam_type||'exam',
+      allowReview:e.allow_review||false,
+      openMorning:e.open_morning||false,
+      openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
       questions:e.questions||[], studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -1596,7 +1617,13 @@ function renderProgExams(el,prog,exams){
     return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:18px;transition:all .15s;" data-eid="${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
         <div style="font-weight:600;font-size:14px;flex:1;line-height:1.4;">${e.title}</div>
-        <span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>
+        ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
+          ? `<div style="display:flex;gap:4px;margin-left:8px;flex-shrink:0;">
+               <span class="status-pill ${e.openMorning?'open':'closed'}" style="font-size:10px;"><span class="status-dot"></span>AM</span>
+               <span class="status-pill ${e.openEvening?'open':'closed'}" style="font-size:10px;"><span class="status-dot"></span>PM</span>
+             </div>`
+          : `<span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>`
+        }
       </div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
       ${eSubs.length?`<div style="font-size:11px;margin-bottom:8px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
@@ -1609,9 +1636,14 @@ function renderProgExams(el,prog,exams){
         </select>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
-        <button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>
+        ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
+          ? `<button class="btn ${e.openMorning?'btn-green':'btn-outline'} btn-xs" data-action="toggle-morning" data-eid="${e.id}">Morning ${e.openMorning?'Open':'Closed'}</button>
+             <button class="btn ${e.openEvening?'btn-green':'btn-outline'} btn-xs" data-action="toggle-evening" data-eid="${e.id}">Evening ${e.openEvening?'Open':'Closed'}</button>`
+          : `<button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>`
+        }
         <button class="btn btn-outline btn-xs" data-action="rename" data-eid="${e.id}">✏ Rename</button>
         <button class="btn btn-outline btn-xs" data-action="print" data-eid="${e.id}">🖨 Print</button>
+        <button class="btn ${e.allowReview?'btn-green':'btn-outline'} btn-xs" data-action="toggle-review" data-eid="${e.id}" title="${e.allowReview?'Answer review ON — students can see their results':'Answer review OFF'}">📖 Review ${e.allowReview?'ON':'OFF'}</button>
         <button class="btn btn-danger btn-xs" data-action="delete" data-eid="${e.id}">🗑</button>
       </div>
     </div>`;
@@ -1636,6 +1668,9 @@ function renderProgExams(el,prog,exams){
       else if(action==='set-type'){
         const exam=db.exams.find(e=>e.id===eid);
         if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Type updated'); }
+      } else if(action==='toggle-review'){
+        const exam=db.exams.find(e=>e.id===eid);
+        if(exam){ exam.allowReview=!exam.allowReview; saveDB(); syncExam(exam).catch(()=>{}); renderProgTab(); toast(exam.allowReview?'📖 Answer review enabled for students.':'Answer review disabled.'); }
       }
     });
     // Also handle select onChange
@@ -1688,6 +1723,7 @@ function renderProgSubs(el,prog,subs){
           <td style="font-size:12px;">${attUsed}/${attMax} ${locked?'🔒':''}</td>
           <td style="display:flex;gap:4px;flex-wrap:wrap;">
             <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="retake">↩ Retake</button>
+            <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="view-detail">📖 Detail</button>
             ${locked
               ?`<button class="btn btn-green btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="unlock">🔓 Unlock</button>`
               :`<button class="btn btn-outline btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="lock">🔒 Lock</button>`}
@@ -1714,6 +1750,7 @@ function renderProgSubs(el,prog,subs){
       });
     }
     el.querySelectorAll('[data-action="retake"]').forEach(btn=>{btn.addEventListener('click',()=>openRetake(btn.dataset.sid));});
+    el.querySelectorAll('[data-action="view-detail"]').forEach(btn=>{btn.addEventListener('click',()=>showSubmissionDetail(btn.dataset.sid));});
     el.querySelectorAll('[data-action="unlock"]').forEach(btn=>{btn.addEventListener('click',()=>{unlockSameExam(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
     el.querySelectorAll('[data-action="lock"]').forEach(btn=>{btn.addEventListener('click',()=>{lockStudentEmail(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
   }
@@ -2076,7 +2113,104 @@ async function deleteStudentConfirm(email){
   renderProgTab();
 }
 
-// ── Inline grade editing (click grade badge in gradebook) ──
+// ── Student answer review ──
+function showStudentReview(examId){
+  const exam=db.exams.find(e=>e.id===examId);
+  if(!exam){ toast('Exam not found.'); return; }
+  const email=ss._portalEmail;
+  const sub=db.submissions.find(s=>s.examId===examId&&s.studentEmail===email);
+  if(!sub){ toast('No submission found for this exam.'); return; }
+
+  const letters=['A','B','C','D'];
+  const detail=sub.detail||[];
+
+  if(!detail.length){
+    toast('No detailed answer record available for this submission.');
+    return;
+  }
+
+  const reviewHTML=detail.map((d,i)=>`
+    <div style="background:var(--surface);border:1.5px solid ${d.isCorrect?'var(--green)':'var(--accent)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Q${i+1}: ${d.q||'Question '+(i+1)}</div>
+      <div style="padding-left:8px;">
+        ${(d.options||[]).map((opt,oi)=>{
+          const isStudentAnswer=d.given===oi;
+          const isCorrect=d.correct===oi;
+          let style='font-size:13px;margin-bottom:4px;padding:4px 8px;border-radius:5px;';
+          if(isCorrect) style+='background:var(--green-light);color:var(--green);font-weight:600;';
+          else if(isStudentAnswer&&!isCorrect) style+='background:var(--accent-light);color:var(--accent);';
+          return `<div style="${style}">
+            ${isCorrect?'✓ ':''}${isStudentAnswer&&!isCorrect?'✗ ':''}${letters[oi]}. ${opt}
+            ${isStudentAnswer?'<span style="font-size:11px;font-weight:normal;"> ← your answer</span>':''}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`).join('');
+
+  // Show in a modal-like overlay
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:1000;overflow-y:auto;padding:24px;';
+  overlay.innerHTML=`
+    <div style="max-width:680px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div>
+          <h2 style="font-size:20px;margin-bottom:3px;">📖 Answer Review</h2>
+          <div style="font-size:13px;color:var(--muted);">${exam.title} · Score: <strong style="color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</strong></div>
+        </div>
+        <button class="btn btn-outline btn-sm" id="close-review-btn">✕ Close</button>
+      </div>
+      <div style="background:var(--surface);border-radius:12px;padding:14px 18px;margin-bottom:18px;display:flex;gap:16px;flex-wrap:wrap;">
+        <div><span style="font-size:12px;color:var(--muted);">Correct</span><div style="font-size:20px;font-weight:700;color:var(--green);">${sub.score}</div></div>
+        <div><span style="font-size:12px;color:var(--muted);">Wrong</span><div style="font-size:20px;font-weight:700;color:var(--accent);">${sub.total-sub.score}</div></div>
+        <div><span style="font-size:12px;color:var(--muted);">Total</span><div style="font-size:20px;font-weight:700;">${sub.total}</div></div>
+      </div>
+      ${reviewHTML}
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-review-btn').addEventListener('click',()=>document.body.removeChild(overlay));
+}
+
+// ── Teacher: view student submission detail ──
+function showSubmissionDetail(subId){
+  const sub=db.submissions.find(s=>s.id===subId);
+  if(!sub){ toast('Submission not found.'); return; }
+  const exam=db.exams.find(e=>e.id===sub.examId);
+  const detail=sub.detail||[];
+  const letters=['A','B','C','D'];
+
+  const reviewHTML=detail.length
+    ?detail.map((d,i)=>`
+      <div style="background:var(--bg);border:1px solid ${d.isCorrect?'var(--green)':'var(--accent)'};border-radius:8px;padding:12px;margin-bottom:8px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Q${i+1}: ${d.q||'Question '+(i+1)}</div>
+        <div style="font-size:12px;margin-bottom:2px;color:${d.isCorrect?'var(--green)':'var(--accent)'};">
+          ${d.isCorrect?'✓':'✗'} Student answered: ${d.given!==null&&d.given!==undefined?letters[d.given]+'. '+(d.options||[])[d.given]:'Not answered'}
+        </div>
+        ${!d.isCorrect?`<div style="font-size:12px;color:var(--green);">✓ Correct answer: ${letters[d.correct]}. ${(d.options||[])[d.correct]||''}</div>`:''}
+      </div>`).join('')
+    :'<div style="color:var(--muted);font-size:13px;">No detailed answer record available.</div>';
+
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:1000;overflow-y:auto;padding:24px;';
+  overlay.innerHTML=`
+    <div style="max-width:680px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <div>
+          <h2 style="font-size:20px;margin-bottom:3px;">${sub.studentName}</h2>
+          <div style="font-size:13px;color:var(--muted);">${exam?exam.title:sub.examTitle||'Exam'} · <strong style="color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</strong></div>
+        </div>
+        <button class="btn btn-outline btn-sm" id="close-sub-detail-btn">✕ Close</button>
+      </div>
+      <div style="background:var(--surface);border-radius:12px;padding:14px 18px;margin-bottom:18px;display:flex;gap:16px;flex-wrap:wrap;">
+        <div><span style="font-size:12px;color:var(--muted);">Score</span><div style="font-size:20px;font-weight:700;">${sub.score}/${sub.total}</div></div>
+        <div><span style="font-size:12px;color:var(--muted);">Grade</span><div style="font-size:20px;font-weight:700;color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</div></div>
+        <div><span style="font-size:12px;color:var(--muted);">Date</span><div style="font-size:14px;">${new Date(sub.date).toLocaleDateString()}</div></div>
+        <div><span style="font-size:12px;color:var(--muted);">Attempts</span><div style="font-size:14px;">${sub.attemptsUsed||1}/${sub.attemptsMax||3}</div></div>
+      </div>
+      ${reviewHTML}
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#close-sub-detail-btn').addEventListener('click',()=>document.body.removeChild(overlay));
+}
 function inlineEditGrade(spanEl,email,examId,currentPct,type){
   const td=spanEl.parentElement;
   const sub=db.submissions.find(s=>s.studentEmail===email&&s.examId===examId);
@@ -3425,6 +3559,7 @@ async function syncFromSupabase(){
     db.exams=(exams||[]).map(e=>({
       id:e.id,title:e.title,program:e.program||'',
       examType:e.exam_type||'exam',
+      allowReview:e.allow_review||false,
       teacherEmail:e.teacher_email||'',open:e.open,
       questions:e.questions||[],studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -3860,6 +3995,9 @@ function _renderExamList(name, email, program){
     const scoreNote = taken && best!==null
       ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;">Best score: <strong style="color:${best>=80?'var(--green)':'var(--accent)'};">${best}%</strong> · ${rec.count}/${rec.max} attempts used</div>`
       : '';
+    const reviewBtn = taken && e.allowReview
+      ? `<button class="btn btn-outline btn-sm" style="font-size:12px;" data-review="${e.id}">📖 Review Answers</button>`
+      : '';
 
     return `<div style="background:var(--surface);border:1.5px solid ${isRetake?'var(--accent2)':'var(--border)'};border-radius:12px;padding:18px 22px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;${isRetake?'box-shadow:0 0 0 3px var(--accent2-light);':''}">
       <div>
@@ -3869,12 +4007,16 @@ function _renderExamList(name, email, program){
         <div style="font-size:12px;color:var(--muted);">${e.questions.length} question${e.questions.length!==1?'s':''}</div>
         ${scoreNote}
       </div>
-      ${!locked ? `<button class="btn btn-primary" data-eid="${e.id}">Take Exam →</button>`
-               : `<span style="font-size:12px;color:var(--muted);">Contact teacher</span>`}
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+        ${reviewBtn}
+        ${!locked ? `<button class="btn btn-primary" data-eid="${e.id}">Take Exam →</button>`
+                 : `<span style="font-size:12px;color:var(--muted);">Contact teacher</span>`}
+      </div>
     </div>`;
   }).join('');
 
   el.querySelectorAll('[data-eid]').forEach(btn=>btn.addEventListener('click',()=>goSignIn(btn.dataset.eid)));
+  el.querySelectorAll('[data-review]').forEach(btn=>btn.addEventListener('click',()=>showStudentReview(btn.dataset.review)));
 }
 
 function goSignIn(examId){
