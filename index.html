@@ -1701,6 +1701,28 @@ function reviewSubmission(sid){
   `);
 }
 
+function findAttemptRecord(exam,email){
+  if(!exam||!email) return null;
+  const key=Object.keys(exam.studentAttempts||{}).find(k=>k.toLowerCase()===email.toLowerCase());
+  return key?exam.studentAttempts[key]:null;
+}
+
+function canStudentReview(exam,email){
+  const rec=findAttemptRecord(exam,email);
+  return !!(rec&&rec.reviewUnlocked);
+}
+
+async function setReviewAccess(eid,email,enabled){
+  const exam=db.exams.find(e=>e.id===eid);
+  if(!exam){ toast('Exam not found.'); return; }
+  const rec=getAttemptRecord(exam,email);
+  rec.reviewUnlocked=!!enabled;
+  saveDB();
+  try{ await syncExam(exam); }catch(e){ console.warn('Review access sync error:',e); }
+  toast(enabled?'Student review unlocked.':'Student review locked.');
+  renderProgTab();
+}
+
 function renderProgSubs(el,prog,subs){
   if(!subs.length){ el.innerHTML='<div class="empty"><div class="empty-icon">📭</div>No submissions yet.</div>'; return; }
   const examMap={};db.exams.forEach(e=>examMap[e.id]=e);
@@ -1719,6 +1741,7 @@ function renderProgSubs(el,prog,subs){
         const attUsed=rec?rec.count:(s.attemptsUsed||1);
         const attMax=rec?rec.max:(s.attemptsMax||3);
         const locked=rec?(rec.locked||rec.count>=rec.max):false;
+        const reviewUnlocked=exam?canStudentReview(exam,s.studentEmail):false;
         return `<tr>
           <td style="font-weight:500;white-space:nowrap;">${s.studentName}</td>
           <td style="font-size:11px;color:var(--muted);">${s.studentEmail}</td>
@@ -1730,9 +1753,9 @@ function renderProgSubs(el,prog,subs){
           <td style="display:flex;gap:4px;flex-wrap:wrap;">
             <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="review">👁 Review</button>
             <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="retake">↩ Retake</button>
-            ${locked
-              ?`<button class="btn btn-green btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="unlock">🔓 Unlock</button>`
-              :`<button class="btn btn-outline btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="lock">🔒 Lock</button>`}
+            ${reviewUnlocked
+              ?`<button class="btn btn-outline btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="lock-review">🔒 Lock Review</button>`
+              :`<button class="btn btn-green btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="unlock-review">🔓 Unlock Review</button>`}
           </td>
         </tr>`;
       }).join('')}</tbody>
@@ -1757,8 +1780,8 @@ function renderProgSubs(el,prog,subs){
     }
     el.querySelectorAll('[data-action="review"]').forEach(btn=>{btn.addEventListener('click',()=>reviewSubmission(btn.dataset.sid));});
     el.querySelectorAll('[data-action="retake"]').forEach(btn=>{btn.addEventListener('click',()=>openRetake(btn.dataset.sid));});
-    el.querySelectorAll('[data-action="unlock"]').forEach(btn=>{btn.addEventListener('click',()=>{unlockSameExam(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
-    el.querySelectorAll('[data-action="lock"]').forEach(btn=>{btn.addEventListener('click',()=>{lockStudentEmail(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
+    el.querySelectorAll('[data-action="unlock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccess(btn.dataset.eid,btn.dataset.email,true));});
+    el.querySelectorAll('[data-action="lock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccess(btn.dataset.eid,btn.dataset.email,false));});
   }
   render(subs);
 }
@@ -3796,7 +3819,7 @@ function _renderExamList(name, email, program){
       s.studentEmail.toLowerCase()===email.toLowerCase() &&
       (s.examId===e.id || (s.examTitle&&s.examTitle===e.title))
     );
-    const canReview = reviewSub && reviewSub.detail && reviewSub.detail.length;
+    const canReview = reviewSub && reviewSub.detail && reviewSub.detail.length && canStudentReview(e,email);
 
     let statusBadge='';
     if(isRetake){
@@ -4078,13 +4101,16 @@ function showResults(sub,exam,attemptInfo){
 
   // Use this attempt's detail if available, otherwise fall back to stored detail
   const detail = info.thisDetail || sub.detail;
+  const studentReviewAllowed = canStudentReview(exam,sub.studentEmail);
   const detailHTML = answerReviewHTML(detail,{showCorrect:true});
-  const reviewPanel = detail&&detail.length
+  const reviewPanel = detail&&detail.length&&studentReviewAllowed
     ? `<details style="background:var(--bg);border-radius:12px;padding:14px 16px;">
          <summary style="cursor:pointer;font-weight:600;font-size:15px;">Show My Answer Review</summary>
          <div style="margin-top:14px;">${detailHTML}</div>
        </details>`
-    : '';
+    : `<div style="background:var(--bg);border-radius:10px;padding:16px;font-size:13px;color:var(--muted);text-align:center;">
+         Answer review is locked by your teacher.
+       </div>`;
 
   // Score stats for THIS attempt
   const thisScore_val = info.thisScore !== undefined ? info.thisScore : sub.percentage;
