@@ -3609,35 +3609,50 @@ async function syncFromSupabase(){
       sbFetch('ep_submissions?order=date_taken.asc'),
       sbFetch('ep_students?order=registered_at.asc').catch(()=>[])
     ]);
-    db.exams=(exams||[]).map(e=>({
-      id:e.id,title:e.title,program:e.program||'',
+
+    if(!exams) return; // Don't wipe local data if fetch failed
+
+    const remoteExams=(exams||[]).map(e=>({
+      id:e.id, title:e.title, program:e.program||'',
       examType:e.exam_type||'exam',
       allowReview:e.allow_review||false,
-      teacherEmail:e.teacher_email||'',open:e.open,
-      questions:e.questions||[],studentAttempts:e.student_attempts||{},
+      openMorning:e.open_morning||false,
+      openEvening:e.open_evening||false,
+      teacherEmail:e.teacher_email||'', open:e.open,
+      questions:e.questions||[], studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
       isRetakeExam:e.is_retake_exam||false,
-      createdFrom:e.created_from||'',createdAt:e.created_at
+      createdFrom:e.created_from||'', createdAt:e.created_at
     }));
+
+    // Merge: keep any local exams not yet in Supabase
+    const remoteIds=new Set(remoteExams.map(e=>e.id));
+    const localOnly=db.exams.filter(e=>!remoteIds.has(e.id));
+    db.exams=[...remoteExams, ...localOnly];
+
+    // Re-sync any local-only exams to Supabase
+    localOnly.forEach(e=>syncExam(e).catch(()=>{}));
+
     db.submissions=(subs||[]).map(s=>({
-      id:s.id,examId:s.exam_id,examTitle:s.exam_title||'',
-      studentName:s.student_name,studentEmail:s.student_email,
-      program:s.program,score:s.score,total:s.total,
-      percentage:s.percentage,detail:s.detail||[],
-      attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,
-      attemptsLeft:s.attempts_left||0,date:s.date_taken
+      id:s.id, examId:s.exam_id, examTitle:s.exam_title||'',
+      studentName:s.student_name, studentEmail:s.student_email,
+      program:s.program, score:s.score, total:s.total,
+      percentage:s.percentage, detail:s.detail||[],
+      attemptsUsed:s.attempts_used||1, attemptsMax:s.attempts_max||3,
+      attemptsLeft:s.attempts_left||0, date:s.date_taken
     }));
     db_students=(students||[]).map(s=>({
-      email:s.email,name:s.name,programs:s.programs||'',
-      registeredAt:s.registered_at,integrityPassed:s.integrity_passed
+      email:s.email, name:s.name, programs:s.programs||'',
+      registeredAt:s.registered_at, integrityPassed:s.integrity_passed
     }));
+
     // Silently refresh current view
     const sid=(document.querySelector('.screen.active')||{}).id;
     if(sid==='screen-teacher' && teacherTab==='dashboard' && !currentProgram) renderDashboard();
     else if(sid==='screen-teacher' && currentProgram) renderProgTab();
     else if(sid==='screen-student-exams' && ss._portalName)
-      _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
-  }catch(e){ /* silent fail */ }
+      _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+  }catch(e){ console.warn('Background sync failed:', e); /* silent fail — never wipe data */ }
 }
 
 // ═══════════════════════════════════════════════════════════════
