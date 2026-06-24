@@ -1608,14 +1608,17 @@ function renderProgExams(el,prog,exams){
     </div>`;
   }).join('')}</div>`;
 
-  // Wire card clicks → open detail (only on card itself, not buttons)
-  el.querySelectorAll('[data-eid]').forEach(card=>{
-    if(card.tagName==='DIV' && !card.dataset.action){
-      card.addEventListener('click',()=>openExamDetail(card.dataset.eid));
+  // Wire card clicks → open detail, but ignore controls inside the card
+  el.querySelectorAll('div[data-eid]').forEach(card=>{
+    if(!card.dataset.action){
+      card.addEventListener('click',(ev)=>{
+        if(ev.target.closest('button,select,input,textarea,label,a')) return;
+        openExamDetail(card.dataset.eid);
+      });
     }
   });
-  // Wire action buttons and type selects
-  el.querySelectorAll('[data-action]').forEach(btn=>{
+  // Wire action buttons only. Selects are handled on change so their menus open normally.
+  el.querySelectorAll('button[data-action]').forEach(btn=>{
     btn.addEventListener('click', async (ev)=>{
       ev.stopPropagation();
       const eid=btn.dataset.eid;
@@ -1633,20 +1636,23 @@ function renderProgExams(el,prog,exams){
         if(exam){ exam.program=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Audience updated'); renderProgTab(); }
       }
     });
-    // Also handle select onChange
-    if(btn.tagName==='SELECT'){
-      btn.addEventListener('change', async ()=>{
-        const eid=btn.dataset.eid;
-        const action=btn.dataset.action;
-        const exam=db.exams.find(e=>e.id===eid);
-        if(!exam) return;
-        if(action==='set-type'){
-          exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated');
-        } else if(action==='set-program'){
-          exam.program=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Audience updated'); renderProgTab();
-        }
-      });
-    }
+  });
+  el.querySelectorAll('select[data-action]').forEach(sel=>{
+    ['click','mousedown','pointerdown'].forEach(evt=>{
+      sel.addEventListener(evt, ev=>ev.stopPropagation());
+    });
+    sel.addEventListener('change', async (ev)=>{
+      ev.stopPropagation();
+      const eid=sel.dataset.eid;
+      const action=sel.dataset.action;
+      const exam=db.exams.find(e=>e.id===eid);
+      if(!exam) return;
+      if(action==='set-type'){
+        exam.examType=sel.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated');
+      } else if(action==='set-program'){
+        exam.program=sel.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Audience updated'); renderProgTab();
+      }
+    });
   });
 }
 
@@ -1723,6 +1729,23 @@ async function setReviewAccess(eid,email,enabled){
   renderProgTab();
 }
 
+async function setReviewAccessBulk(submissions,enabled){
+  const changed=new Map();
+  submissions.forEach(sub=>{
+    const exam=db.exams.find(e=>e.id===sub.examId);
+    if(!exam) return;
+    const rec=getAttemptRecord(exam,sub.studentEmail);
+    rec.reviewUnlocked=!!enabled;
+    changed.set(exam.id,exam);
+  });
+  if(!changed.size){ toast('No submissions to update.'); return; }
+  saveDB();
+  try{ await Promise.all([...changed.values()].map(exam=>syncExam(exam))); }
+  catch(e){ console.warn('Bulk review access sync error:',e); }
+  toast(enabled?'Reviews unlocked for visible submissions.':'Reviews locked for visible submissions.');
+  renderProgTab();
+}
+
 function renderProgSubs(el,prog,subs){
   if(!subs.length){ el.innerHTML='<div class="empty"><div class="empty-icon">📭</div>No submissions yet.</div>'; return; }
   const examMap={};db.exams.forEach(e=>examMap[e.id]=e);
@@ -1768,6 +1791,11 @@ function renderProgSubs(el,prog,subs){
         <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
         ${shifts.map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
       </div>`:'')
+      + `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+          <button class="btn btn-green btn-sm" data-action="bulk-unlock-review">🔓 Unlock Reviews for Visible Students</button>
+          <button class="btn btn-outline btn-sm" data-action="bulk-lock-review">🔒 Lock Reviews for Visible Students</button>
+          <span style="font-size:12px;color:var(--muted);">${filterSubs.length} visible submission${filterSubs.length!==1?'s':''}</span>
+        </div>`
       +buildTable(filterSubs);
     if(hasShifts){
       el.querySelectorAll('[data-shift]').forEach(btn=>{
@@ -1782,6 +1810,8 @@ function renderProgSubs(el,prog,subs){
     el.querySelectorAll('[data-action="retake"]').forEach(btn=>{btn.addEventListener('click',()=>openRetake(btn.dataset.sid));});
     el.querySelectorAll('[data-action="unlock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccess(btn.dataset.eid,btn.dataset.email,true));});
     el.querySelectorAll('[data-action="lock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccess(btn.dataset.eid,btn.dataset.email,false));});
+    el.querySelectorAll('[data-action="bulk-unlock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccessBulk(filterSubs,true));});
+    el.querySelectorAll('[data-action="bulk-lock-review"]').forEach(btn=>{btn.addEventListener('click',()=>setReviewAccessBulk(filterSubs,false));});
   }
   render(subs);
 }
@@ -2457,25 +2487,6 @@ function closeDashDetail(){
     renderDashboard();
   }
 }
-
-// Sync background
-async function syncFromSupabase(){
-  try{
-    const [exams,subs]=await Promise.all([
-      sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
-      sbFetch('ep_submissions?order=date_taken.asc')
-    ]);
-    db.exams=(exams||[]).map(e=>({id:e.id,title:e.title,program:e.program||'',examType:e.exam_type||'exam',teacherEmail:e.teacher_email||'',open:e.open,questions:e.questions||[],studentAttempts:e.student_attempts||{},allowedEmails:e.allowed_emails||[],isRetakeExam:e.is_retake_exam||false,createdFrom:e.created_from||'',createdAt:e.created_at}));
-    db.submissions=(subs||[]).map(s=>({id:s.id,examId:s.exam_id,examTitle:s.exam_title||'',studentName:s.student_name,studentEmail:s.student_email,program:s.program,score:s.score,total:s.total,percentage:s.percentage,detail:s.detail||[],attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,attemptsLeft:s.attempts_left||0,date:s.date_taken}));
-    const sid=(document.querySelector('.screen.active')||{}).id;
-    if(sid==='screen-teacher'){
-      if(teacherTab==='dashboard'&&!currentProgram) renderDashboard();
-      else if(currentProgram) renderProgTab();
-    } else if(sid==='screen-student-exams'&&ss._portalName)
-      _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
-  }catch(e){}
-}
-
 
 // ═══════════════════════════════════════════════════════════════
 //  EXAM CRUD
@@ -3419,6 +3430,15 @@ async function syncFromSupabase(){
     else if(sid==='screen-teacher' && currentProgram) renderProgTab();
     else if(sid==='screen-student-exams' && ss._portalName)
       _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
+    else if(sid==='screen-results' && ss.reviewSid){
+      const sub=db.submissions.find(s=>s.id===ss.reviewSid);
+      const exam=sub?db.exams.find(e=>e.id===sub.examId):null;
+      if(!sub||!canStudentReview(exam,sub.studentEmail)){
+        ss.reviewSid=null;
+        toast('Your teacher locked this answer review.');
+        refreshStudentExamList();
+      }
+    }
   }catch(e){ /* silent fail */ }
 }
 
@@ -3860,6 +3880,13 @@ function showStudentAnswerReview(sid){
   const sub=db.submissions.find(s=>s.id===sid);
   if(!sub){ toast('Review not found.'); return; }
   const exam=db.exams.find(e=>e.id===sub.examId);
+  if(!canStudentReview(exam,sub.studentEmail)){
+    ss.reviewSid=null;
+    toast('This review is locked by your teacher.');
+    refreshStudentExamList();
+    return;
+  }
+  ss.reviewSid=sid;
   showScreen('screen-results');
   document.getElementById('results-box').innerHTML=`
     <div class="results-score">
@@ -3899,6 +3926,7 @@ function goSignIn(examId){
 
 
 function startExam(){
+  ss.reviewSid=null;
   const name=document.getElementById('si-name').value.trim();
   const email=document.getElementById('si-email').value.trim();
   const program=document.getElementById('si-program').value;
@@ -4063,6 +4091,7 @@ function submitExam(){
 //  RESULTS
 // ═══════════════════════════════════════════════════════════════
 function showResults(sub,exam,attemptInfo){
+  ss.reviewSid=null;
   showScreen('screen-results');
   const info = attemptInfo || {attemptsLeft:0, isNewBest:true, thisScore:sub.percentage};
 
