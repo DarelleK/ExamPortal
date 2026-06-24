@@ -594,7 +594,11 @@ textarea{resize:vertical;}
       <select id="ne-program">
         <option value="">— All Programs (General) —</option>
         <option>Nurse Aide</option>
+        <option>Nurse Aide Morning</option>
+        <option>Nurse Aide Evening</option>
         <option>Medication Aide</option>
+        <option>Medication Aide Morning</option>
+        <option>Medication Aide Evening</option>
         <option>Medical Assistant</option>
         <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
@@ -885,6 +889,7 @@ textarea{resize:vertical;}
         <option>Medication Aide Morning</option>
         <option>Medication Aide Evening</option>
         <option>Medical Assistant</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
       </select>
@@ -990,45 +995,26 @@ function studentToTeacher(sp){
   if(base==='Medical Assistant + Phlebotomy + EKG') return 'Medical Assistant + Phlebotomy + EKG';
   return base;
 }
-
 const COMBO_PROGRAM = 'Medical Assistant + Phlebotomy + EKG';
 function examBelongsToProgram(examProgram, dashboardProgram){
-  const ep = examProgram || '';
-  if(dashboardProgram===COMBO_PROGRAM){
-    return ep===COMBO_PROGRAM || ep==='Medical Assistant' || ep==='EKG' || ep==='Phlebotomy' || !ep;
-  }
-  return ep===dashboardProgram || (dashboardProgram==='General'&&!ep);
+  const ep=examProgram||'';
+  if(dashboardProgram===COMBO_PROGRAM) return ep===COMBO_PROGRAM||ep==='Medical Assistant'||ep==='EKG'||ep==='Phlebotomy'||!ep;
+  return studentToTeacher(ep)===dashboardProgram||(dashboardProgram==='General'&&!ep);
 }
 function studentBelongsToProgram(studentProgram, dashboardProgram){
-  const sp = studentProgram || '';
-  const teacherProgram = studentToTeacher(sp);
-  return teacherProgram===dashboardProgram ||
-    (dashboardProgram===COMBO_PROGRAM && sp.includes('Medical Assistant')) ||
+  const sp=studentProgram||'';
+  return studentToTeacher(sp)===dashboardProgram||
+    (dashboardProgram===COMBO_PROGRAM&&sp.includes('Medical Assistant'))||
     (dashboardProgram==='General'&&!sp);
 }
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   if(!exam.program || exam.program==='') return true; // general
-  const ep = exam.program;
+  const ep = exam.program; // exam's program
   const isComboStudent = studentProg==='Medical Assistant + Phlebotomy + EKG';
-  const isShiftProg = ep==='Nurse Aide' || ep==='Medication Aide';
-
-  // For shift programs, check that the specific shift is open
-  if(isShiftProg){
-    const isMorning = studentProg.includes('Morning');
-    const isEvening = studentProg.includes('Evening');
-    const baseMatch = ep===studentToTeacher(studentProg);
-    if(!baseMatch) return false;
-    // If neither shift toggle is set, fall back to main open flag
-    if(!exam.openMorning && !exam.openEvening) return exam.open;
-    if(isMorning) return !!exam.openMorning;
-    if(isEvening) return !!exam.openEvening;
-    return exam.open;
-  }
-
   // Exact match
   if(ep===studentProg) return true;
-  // Base match (strips Morning/Evening)
+  // Base match (Morning/Evening)
   if(ep===studentToTeacher(studentProg)) return true;
   // Combo students see EKG, Phlebotomy, and Medical Assistant exams
   if(isComboStudent && (ep==='EKG'||ep==='Phlebotomy'||ep==='Medical Assistant + Phlebotomy + EKG')) return true;
@@ -1049,8 +1035,7 @@ async function fetchQBBanks(){
     const rows = await res.json();
     if(!rows||!rows.length||!rows[0].data) return [];
     const banks = JSON.parse(rows[0].data);
-    // Filter out malformed entries with no name or undefined name
-    return Array.isArray(banks) ? banks.filter(b=>b&&b.name&&b.name!=='undefined'&&b.name.trim()!=='') : [];
+    return Array.isArray(banks) ? banks : [];
   }catch(e){ console.warn('Could not load QB banks:',e); return []; }
 }
 // Pre-filled — change in Settings if needed
@@ -1086,37 +1071,25 @@ async function sbFetch(path, opts={}){
 
 // Local cache — always use this for rendering
 const MAX_ATTEMPTS = 3;
-
 let db = {exams:[], submissions:[], settings:{}, pin:'123456', trash:[]};
 let db_students = []; // registered students
 let dbLoaded = false;
 
-function getAttemptRecord(exam, email){
-  if(!exam.studentAttempts) exam.studentAttempts = {};
-
-  const emailKey = String(email || '').trim();
-  const matchingKey = Object.keys(exam.studentAttempts)
-    .find(key => key.toLowerCase() === emailKey.toLowerCase());
-  const recordKey = matchingKey || emailKey;
-
+function getAttemptRecord(exam,email){
+  if(!exam.studentAttempts) exam.studentAttempts={};
+  const emailKey=String(email||'').trim();
+  const matchingKey=Object.keys(exam.studentAttempts).find(k=>k.toLowerCase()===emailKey.toLowerCase());
+  const recordKey=matchingKey||emailKey;
   if(!exam.studentAttempts[recordKey]){
-    exam.studentAttempts[recordKey] = {
-      count: 0,
-      max: MAX_ATTEMPTS,
-      bestScore: null,
-      bestDate: null,
-      history: [],
-      locked: false
-    };
+    exam.studentAttempts[recordKey]={count:0,max:MAX_ATTEMPTS,bestScore:null,bestDate:null,history:[],locked:false};
   }
-
-  const rec = exam.studentAttempts[recordKey];
-  if(!Number.isFinite(rec.count)) rec.count = 0;
-  if(!Number.isFinite(rec.max) || rec.max < 1) rec.max = MAX_ATTEMPTS;
-  if(!Array.isArray(rec.history)) rec.history = [];
-  if(rec.bestScore === undefined) rec.bestScore = null;
-  if(rec.bestDate === undefined) rec.bestDate = null;
-  rec.locked = !!rec.locked || rec.count >= rec.max;
+  const rec=exam.studentAttempts[recordKey];
+  if(!Number.isFinite(rec.count)) rec.count=0;
+  if(!Number.isFinite(rec.max)||rec.max<1) rec.max=MAX_ATTEMPTS;
+  if(!Array.isArray(rec.history)) rec.history=[];
+  if(rec.bestScore===undefined) rec.bestScore=null;
+  if(rec.bestDate===undefined) rec.bestDate=null;
+  rec.locked=!!rec.locked||rec.count>=rec.max;
   return rec;
 }
 
@@ -1162,9 +1135,6 @@ async function syncExam(exam){
     body:{
       id:exam.id, title:exam.title, program:exam.program||'',
       exam_type:exam.examType||'exam',
-      allow_review:exam.allowReview||false,
-      open_morning:exam.openMorning||false,
-      open_evening:exam.openEvening||false,
       teacher_email:exam.teacherEmail||'', open:exam.open,
       questions:exam.questions, student_attempts:exam.studentAttempts||{},
       allowed_emails:exam.allowedEmails||[],
@@ -1226,9 +1196,6 @@ async function loadFromSupabase(){
     db.exams = (exams||[]).map(e=>({
       id:e.id, title:e.title, program:e.program||'',
       examType:e.exam_type||'exam',
-      allowReview:e.allow_review||false,
-      openMorning:e.open_morning||false,
-      openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
       questions:e.questions||[], studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -1247,10 +1214,7 @@ async function loadFromSupabase(){
       date:s.date_taken
     }));
 
-    db_students = (students||[]).map(s=>({
-      email:s.email,name:s.name,programs:s.programs||'',
-      registeredAt:s.registered_at,integrityPassed:s.integrity_passed
-    }));
+    db_students=(students||[]).map(s=>({email:s.email,name:s.name,programs:s.programs||'',registeredAt:s.registered_at,integrityPassed:s.integrity_passed}));
 
     if(settings && settings.length>0){
       const s=settings[0];
@@ -1521,14 +1485,13 @@ function renderDashboard(){
 
   const allProgs = [...TEACHER_PROGRAMS]; // No 'General' card
   grid.innerHTML = allProgs.map(prog=>{
-    const programSubs = db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
-    const examCount = db.exams.filter(e=>!e.isRetakeExam && !e.is_trashed && examBelongsToProgram(e.program,prog)).length;
-    const subCount  = programSubs.length;
-    const studentEmails = new Set(programSubs.map(s=>s.studentEmail.toLowerCase()));
-    (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog))
-      .forEach(s=>studentEmails.add(s.email.toLowerCase()));
-    const studentCount = studentEmails.size;
-    const passRate  = subCount ? Math.round(programSubs.filter(s=>s.percentage>=80).length/subCount*100) : null;
+    const programSubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
+    const examCount=db.exams.filter(e=>!e.isRetakeExam&&!e.is_trashed&&examBelongsToProgram(e.program,prog)).length;
+    const subCount=programSubs.length;
+    const studentEmails=new Set(programSubs.map(s=>s.studentEmail.toLowerCase()));
+    (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog)).forEach(s=>studentEmails.add(s.email.toLowerCase()));
+    const studentCount=studentEmails.size;
+    const passRate=subCount?Math.round(programSubs.filter(s=>s.percentage>=80).length/subCount*100):null;
 
     return `<div class="prog-card" data-prog="${prog}">
       <div class="prog-card-icon">${PROG_ICONS[prog]||'📋'}</div>
@@ -1591,8 +1554,7 @@ function renderProgTab(){
   });
   const subs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
   const studentEmails=new Set(subs.map(s=>s.studentEmail.toLowerCase()));
-  (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog))
-    .forEach(s=>studentEmails.add(s.email.toLowerCase()));
+  (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog)).forEach(s=>studentEmails.add(s.email.toLowerCase()));
   const studentCount=studentEmails.size;
 
   // Update stats
@@ -1617,13 +1579,7 @@ function renderProgExams(el,prog,exams){
     return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:18px;transition:all .15s;" data-eid="${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
         <div style="font-weight:600;font-size:14px;flex:1;line-height:1.4;">${e.title}</div>
-        ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
-          ? `<div style="display:flex;gap:4px;margin-left:8px;flex-shrink:0;">
-               <span class="status-pill ${e.openMorning?'open':'closed'}" style="font-size:10px;"><span class="status-dot"></span>AM</span>
-               <span class="status-pill ${e.openEvening?'open':'closed'}" style="font-size:10px;"><span class="status-dot"></span>PM</span>
-             </div>`
-          : `<span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>`
-        }
+        <span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
       ${eSubs.length?`<div style="font-size:11px;margin-bottom:8px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
@@ -1635,15 +1591,18 @@ function renderProgExams(el,prog,exams){
           <option value="workbook" ${e.examType==='workbook'?'selected':''}>📚 Workbook</option>
         </select>
       </div>
+      ${['Nurse Aide','Medication Aide'].includes(prog)?`
+      <div style="margin-bottom:8px;" onclick="event.stopPropagation()">
+        <select data-action="set-program" data-eid="${e.id}" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);width:100%;">
+          <option value="${prog}" ${e.program===prog?'selected':''}>Both Morning & Evening</option>
+          <option value="${prog} Morning" ${e.program===prog+' Morning'?'selected':''}>Morning only</option>
+          <option value="${prog} Evening" ${e.program===prog+' Evening'?'selected':''}>Evening only</option>
+        </select>
+      </div>`:''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
-        ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
-          ? `<button class="btn ${e.openMorning?'btn-green':'btn-outline'} btn-xs" data-action="toggle-morning" data-eid="${e.id}">Morning ${e.openMorning?'Open':'Closed'}</button>
-             <button class="btn ${e.openEvening?'btn-green':'btn-outline'} btn-xs" data-action="toggle-evening" data-eid="${e.id}">Evening ${e.openEvening?'Open':'Closed'}</button>`
-          : `<button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>`
-        }
+        <button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>
         <button class="btn btn-outline btn-xs" data-action="rename" data-eid="${e.id}">✏ Rename</button>
         <button class="btn btn-outline btn-xs" data-action="print" data-eid="${e.id}">🖨 Print</button>
-        <button class="btn ${e.allowReview?'btn-green':'btn-outline'} btn-xs" data-action="toggle-review" data-eid="${e.id}" title="${e.allowReview?'Answer review ON — students can see their results':'Answer review OFF'}">📖 Review ${e.allowReview?'ON':'OFF'}</button>
         <button class="btn btn-danger btn-xs" data-action="delete" data-eid="${e.id}">🗑</button>
       </div>
     </div>`;
@@ -1668,17 +1627,24 @@ function renderProgExams(el,prog,exams){
       else if(action==='set-type'){
         const exam=db.exams.find(e=>e.id===eid);
         if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Type updated'); }
-      } else if(action==='toggle-review'){
+      }
+      else if(action==='set-program'){
         const exam=db.exams.find(e=>e.id===eid);
-        if(exam){ exam.allowReview=!exam.allowReview; saveDB(); syncExam(exam).catch(()=>{}); renderProgTab(); toast(exam.allowReview?'📖 Answer review enabled for students.':'Answer review disabled.'); }
+        if(exam){ exam.program=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Audience updated'); renderProgTab(); }
       }
     });
     // Also handle select onChange
     if(btn.tagName==='SELECT'){
       btn.addEventListener('change', async ()=>{
         const eid=btn.dataset.eid;
+        const action=btn.dataset.action;
         const exam=db.exams.find(e=>e.id===eid);
-        if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated'); }
+        if(!exam) return;
+        if(action==='set-type'){
+          exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated');
+        } else if(action==='set-program'){
+          exam.program=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Audience updated'); renderProgTab();
+        }
       });
     }
   });
@@ -1693,6 +1659,46 @@ function openRenameExamModal(eid){
   saveDB(); syncExam(exam).catch(()=>{});
   renderProgTab();
   toast('✓ Exam renamed.');
+}
+
+function answerReviewHTML(detail, opts={}){
+  const letters=['A','B','C','D'];
+  const showCorrect = opts.showCorrect !== false;
+  if(!detail||!detail.length){
+    return '<div class="empty"><div class="empty-icon">📭</div>No answer details were saved for this submission.</div>';
+  }
+  return detail.map((d,i)=>{
+    const givenText = d.given!==null && d.given!==undefined
+      ? `${letters[d.given]||''}. ${(d.options||[])[d.given]||''}`
+      : 'Not answered';
+    const correctText = d.correct!==null && d.correct!==undefined
+      ? `${letters[d.correct]||''}. ${(d.options||[])[d.correct]||''}`
+      : 'Not available';
+    return `<div class="review-item" style="border-left:3px solid ${d.isCorrect?'var(--green)':'var(--accent)'};">
+      <div class="rq">Q${i+1}: ${d.q}</div>
+      <div class="ra"><strong style="color:${d.isCorrect?'var(--green)':'var(--accent)'};">${d.isCorrect?'✓ Correct':'✕ Incorrect'}</strong></div>
+      <div class="ra"><span class="ra-label">Student answer:</span> <span style="color:${d.isCorrect?'var(--green)':'var(--accent)'};">${givenText}</span></div>
+      ${showCorrect?`<div class="ra" style="margin-top:4px;"><span class="ra-label">Correct answer:</span> <span style="color:var(--green);">${correctText}</span></div>`:''}
+    </div>`;
+  }).join('');
+}
+
+function reviewSubmission(sid){
+  const sub=db.submissions.find(s=>s.id===sid);
+  if(!sub){ toast('Submission not found.'); return; }
+  const exam=db.exams.find(e=>e.id===sub.examId);
+  showDashDetail(`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
+      <div>
+        <h2 style="margin-bottom:4px;">Answer Review</h2>
+        <div style="font-size:13px;color:var(--muted);">${sub.studentName} · ${sub.studentEmail}</div>
+        <div style="font-size:13px;color:var(--muted);">${exam?exam.title:(sub.examTitle||'Exam')} · ${sub.program}</div>
+      </div>
+      <span class="grade-badge ${sub.percentage>=80?'grade-pass':'grade-fail'}">${sub.percentage}%</span>
+    </div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:14px;">Score: <strong>${sub.score}/${sub.total}</strong> · Taken ${new Date(sub.date).toLocaleString()}</div>
+    ${answerReviewHTML(sub.detail,{showCorrect:true})}
+  `);
 }
 
 function renderProgSubs(el,prog,subs){
@@ -1722,8 +1728,8 @@ function renderProgSubs(el,prog,subs){
           <td style="font-size:11px;color:var(--muted);">${new Date(s.date).toLocaleDateString()}</td>
           <td style="font-size:12px;">${attUsed}/${attMax} ${locked?'🔒':''}</td>
           <td style="display:flex;gap:4px;flex-wrap:wrap;">
+            <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="review">👁 Review</button>
             <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="retake">↩ Retake</button>
-            <button class="btn btn-outline btn-xs" data-sid="${s.id}" data-action="view-detail">📖 Detail</button>
             ${locked
               ?`<button class="btn btn-green btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="unlock">🔓 Unlock</button>`
               :`<button class="btn btn-outline btn-xs" data-eid="${s.examId}" data-email="${s.studentEmail}" data-action="lock">🔒 Lock</button>`}
@@ -1749,8 +1755,8 @@ function renderProgSubs(el,prog,subs){
         });
       });
     }
+    el.querySelectorAll('[data-action="review"]').forEach(btn=>{btn.addEventListener('click',()=>reviewSubmission(btn.dataset.sid));});
     el.querySelectorAll('[data-action="retake"]').forEach(btn=>{btn.addEventListener('click',()=>openRetake(btn.dataset.sid));});
-    el.querySelectorAll('[data-action="view-detail"]').forEach(btn=>{btn.addEventListener('click',()=>showSubmissionDetail(btn.dataset.sid));});
     el.querySelectorAll('[data-action="unlock"]').forEach(btn=>{btn.addEventListener('click',()=>{unlockSameExam(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
     el.querySelectorAll('[data-action="lock"]').forEach(btn=>{btn.addEventListener('click',()=>{lockStudentEmail(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
   }
@@ -2113,104 +2119,7 @@ async function deleteStudentConfirm(email){
   renderProgTab();
 }
 
-// ── Student answer review ──
-function showStudentReview(examId){
-  const exam=db.exams.find(e=>e.id===examId);
-  if(!exam){ toast('Exam not found.'); return; }
-  const email=ss._portalEmail;
-  const sub=db.submissions.find(s=>s.examId===examId&&s.studentEmail===email);
-  if(!sub){ toast('No submission found for this exam.'); return; }
-
-  const letters=['A','B','C','D'];
-  const detail=sub.detail||[];
-
-  if(!detail.length){
-    toast('No detailed answer record available for this submission.');
-    return;
-  }
-
-  const reviewHTML=detail.map((d,i)=>`
-    <div style="background:var(--surface);border:1.5px solid ${d.isCorrect?'var(--green)':'var(--accent)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
-      <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Q${i+1}: ${d.q||'Question '+(i+1)}</div>
-      <div style="padding-left:8px;">
-        ${(d.options||[]).map((opt,oi)=>{
-          const isStudentAnswer=d.given===oi;
-          const isCorrect=d.correct===oi;
-          let style='font-size:13px;margin-bottom:4px;padding:4px 8px;border-radius:5px;';
-          if(isCorrect) style+='background:var(--green-light);color:var(--green);font-weight:600;';
-          else if(isStudentAnswer&&!isCorrect) style+='background:var(--accent-light);color:var(--accent);';
-          return `<div style="${style}">
-            ${isCorrect?'✓ ':''}${isStudentAnswer&&!isCorrect?'✗ ':''}${letters[oi]}. ${opt}
-            ${isStudentAnswer?'<span style="font-size:11px;font-weight:normal;"> ← your answer</span>':''}
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`).join('');
-
-  // Show in a modal-like overlay
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:1000;overflow-y:auto;padding:24px;';
-  overlay.innerHTML=`
-    <div style="max-width:680px;margin:0 auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div>
-          <h2 style="font-size:20px;margin-bottom:3px;">📖 Answer Review</h2>
-          <div style="font-size:13px;color:var(--muted);">${exam.title} · Score: <strong style="color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</strong></div>
-        </div>
-        <button class="btn btn-outline btn-sm" id="close-review-btn">✕ Close</button>
-      </div>
-      <div style="background:var(--surface);border-radius:12px;padding:14px 18px;margin-bottom:18px;display:flex;gap:16px;flex-wrap:wrap;">
-        <div><span style="font-size:12px;color:var(--muted);">Correct</span><div style="font-size:20px;font-weight:700;color:var(--green);">${sub.score}</div></div>
-        <div><span style="font-size:12px;color:var(--muted);">Wrong</span><div style="font-size:20px;font-weight:700;color:var(--accent);">${sub.total-sub.score}</div></div>
-        <div><span style="font-size:12px;color:var(--muted);">Total</span><div style="font-size:20px;font-weight:700;">${sub.total}</div></div>
-      </div>
-      ${reviewHTML}
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.querySelector('#close-review-btn').addEventListener('click',()=>document.body.removeChild(overlay));
-}
-
-// ── Teacher: view student submission detail ──
-function showSubmissionDetail(subId){
-  const sub=db.submissions.find(s=>s.id===subId);
-  if(!sub){ toast('Submission not found.'); return; }
-  const exam=db.exams.find(e=>e.id===sub.examId);
-  const detail=sub.detail||[];
-  const letters=['A','B','C','D'];
-
-  const reviewHTML=detail.length
-    ?detail.map((d,i)=>`
-      <div style="background:var(--bg);border:1px solid ${d.isCorrect?'var(--green)':'var(--accent)'};border-radius:8px;padding:12px;margin-bottom:8px;">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Q${i+1}: ${d.q||'Question '+(i+1)}</div>
-        <div style="font-size:12px;margin-bottom:2px;color:${d.isCorrect?'var(--green)':'var(--accent)'};">
-          ${d.isCorrect?'✓':'✗'} Student answered: ${d.given!==null&&d.given!==undefined?letters[d.given]+'. '+(d.options||[])[d.given]:'Not answered'}
-        </div>
-        ${!d.isCorrect?`<div style="font-size:12px;color:var(--green);">✓ Correct answer: ${letters[d.correct]}. ${(d.options||[])[d.correct]||''}</div>`:''}
-      </div>`).join('')
-    :'<div style="color:var(--muted);font-size:13px;">No detailed answer record available.</div>';
-
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:1000;overflow-y:auto;padding:24px;';
-  overlay.innerHTML=`
-    <div style="max-width:680px;margin:0 auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div>
-          <h2 style="font-size:20px;margin-bottom:3px;">${sub.studentName}</h2>
-          <div style="font-size:13px;color:var(--muted);">${exam?exam.title:sub.examTitle||'Exam'} · <strong style="color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</strong></div>
-        </div>
-        <button class="btn btn-outline btn-sm" id="close-sub-detail-btn">✕ Close</button>
-      </div>
-      <div style="background:var(--surface);border-radius:12px;padding:14px 18px;margin-bottom:18px;display:flex;gap:16px;flex-wrap:wrap;">
-        <div><span style="font-size:12px;color:var(--muted);">Score</span><div style="font-size:20px;font-weight:700;">${sub.score}/${sub.total}</div></div>
-        <div><span style="font-size:12px;color:var(--muted);">Grade</span><div style="font-size:20px;font-weight:700;color:${sub.percentage>=80?'var(--green)':'var(--accent)'};">${sub.percentage}%</div></div>
-        <div><span style="font-size:12px;color:var(--muted);">Date</span><div style="font-size:14px;">${new Date(sub.date).toLocaleDateString()}</div></div>
-        <div><span style="font-size:12px;color:var(--muted);">Attempts</span><div style="font-size:14px;">${sub.attemptsUsed||1}/${sub.attemptsMax||3}</div></div>
-      </div>
-      ${reviewHTML}
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.querySelector('#close-sub-detail-btn').addEventListener('click',()=>document.body.removeChild(overlay));
-}
+// ── Inline grade editing (click grade badge in gradebook) ──
 function inlineEditGrade(spanEl,email,examId,currentPct,type){
   const td=spanEl.parentElement;
   const sub=db.submissions.find(s=>s.studentEmail===email&&s.examId===examId);
@@ -2359,24 +2268,14 @@ function populateMGStudentDropdown(prog){
   }).forEach(s=>{ studentMap[s.studentEmail.toLowerCase()]={name:s.studentName,email:s.studentEmail,program:s.program}; });
   (db_students||[]).filter(s=>{
     return studentBelongsToProgram(s.programs,prog)||prog==='';
-  }).forEach(s=>{
-    const key=s.email.toLowerCase();
-    if(!studentMap[key]) studentMap[key]={name:s.name,email:s.email,program:s.programs};
-  });
+  }).forEach(s=>{ const key=s.email.toLowerCase(); if(!studentMap[key]) studentMap[key]={name:s.name,email:s.email,program:s.programs}; });
 
   const students=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
   sel.replaceChildren();
   sel.add(new Option(students.length?'— Select a student —':'— No students found for this program —',''));
-  students.forEach(s=>{
-    const opt=new Option(`${s.name} (${s.program})`,s.email);
-    opt.dataset.name=s.name;
-    opt.dataset.prog=s.program;
-    sel.add(opt);
-  });
+  students.forEach(s=>{ const opt=new Option(`${s.name} (${s.program})`,s.email); opt.dataset.name=s.name; opt.dataset.prog=s.program; sel.add(opt); });
   sel.disabled=!students.length;
-  if(help) help.textContent=students.length
-    ? `${students.length} student${students.length!==1?'s':''} available for ${prog||'all programs'}.`
-    : `No registered students or submissions were found for ${prog||'this program'}.`;
+  if(help) help.textContent=students.length?`${students.length} student${students.length!==1?'s':''} available for ${prog||'all programs'}.`:`No registered students or submissions were found for ${prog||'this program'}.`;
 }
 
 function fillManualGradeStudent(){
@@ -2442,77 +2341,26 @@ async function saveStudentEdit(){
   const name=document.getElementById('edit-stu-name').value.trim();
   const email=document.getElementById('edit-stu-email').value.trim().toLowerCase();
   const program=document.getElementById('edit-stu-program').value;
-  if(!name||!email||!email.includes('@')||!program){
-    toast('Please enter a valid name, email, and program.');
-    return;
-  }
-
-  const directStudent=sid.startsWith('student:');
-  const sourceSub=directStudent?null:db.submissions.find(s=>s.id===sid);
-  const oldEmail=directStudent?sid.slice(8):(sourceSub&&sourceSub.studentEmail);
+  if(!name||!email||!email.includes('@')||!program){ toast('Please enter a valid name, email, and program.'); return; }
+  const direct=sid.startsWith('student:');
+  const source=direct?null:db.submissions.find(s=>s.id===sid);
+  const oldEmail=direct?sid.slice(8):(source&&source.studentEmail);
   if(!oldEmail){ toast('Student record not found.'); return; }
-  const oldEmailLow=oldEmail.toLowerCase();
-  const registered=db_students.find(s=>s.email.toLowerCase()===oldEmailLow);
-  const changedExams=[];
-
+  const oldLow=oldEmail.toLowerCase();
+  const registered=db_students.find(s=>s.email.toLowerCase()===oldLow);
   try{
-    await sbFetch('ep_submissions?student_email=eq.'+encodeURIComponent(oldEmail),{
-      method:'PATCH', prefer:'return=minimal',
-      body:{student_name:name,student_email:email,program}
-    });
-    await sbFetch('ep_manual_grades?email=eq.'+encodeURIComponent(oldEmail),{
-      method:'PATCH', prefer:'return=minimal',
-      body:{name,email,program}
-    });
-    if(email!==oldEmailLow){
-      await sbFetch('ep_students?email=eq.'+encodeURIComponent(oldEmail),{
-        method:'DELETE', prefer:'return=minimal'
-      });
-    }
-    await sbFetch('ep_students',{
-      method:'POST',
-      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-      body:{
-        email,name,programs:program,
-        registered_at:(registered&&registered.registeredAt)||new Date().toISOString(),
-        integrity_passed:registered?!!registered.integrityPassed:true
-      }
-    });
-
-    db.submissions.forEach(s=>{
-      if(s.studentEmail.toLowerCase()===oldEmailLow){
-        s.studentName=name; s.studentEmail=email; s.program=program;
-      }
-    });
-    db_manualGrades.forEach(g=>{
-      if(g.email.toLowerCase()===oldEmailLow){
-        g.name=name; g.email=email; g.program=program;
-      }
-    });
-    db_students=db_students.filter(s=>s.email.toLowerCase()!==oldEmailLow);
-    db_students.push({
-      email,name,programs:program,
-      registeredAt:(registered&&registered.registeredAt)||new Date().toISOString(),
-      integrityPassed:registered?!!registered.integrityPassed:true
-    });
-    db.exams.forEach(exam=>{
-      const attempts=exam.studentAttempts||{};
-      const key=Object.keys(attempts).find(k=>k.toLowerCase()===oldEmailLow);
-      if(key && key!==email){
-        attempts[email]=attempts[key];
-        delete attempts[key];
-        changedExams.push(exam);
-      }
-    });
-    await Promise.all(changedExams.map(exam=>syncExam(exam)));
-    saveDB();
-    closeModal('modal-edit-student');
-    toast('Student information updated.');
-    if(currentProgram) renderProgTab(); else renderDashboard();
-  }catch(e){
-    console.error('Student update failed:',e);
-    toast('Could not save student changes: '+e.message);
-  }
+    await sbFetch('ep_submissions?student_email=eq.'+encodeURIComponent(oldEmail),{method:'PATCH',prefer:'return=minimal',body:{student_name:name,student_email:email,program}});
+    await sbFetch('ep_manual_grades?email=eq.'+encodeURIComponent(oldEmail),{method:'PATCH',prefer:'return=minimal',body:{name,email,program}});
+    if(email!==oldLow) await sbFetch('ep_students?email=eq.'+encodeURIComponent(oldEmail),{method:'DELETE',prefer:'return=minimal'});
+    await sbFetch('ep_students',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:{email,name,programs:program,registered_at:(registered&&registered.registeredAt)||new Date().toISOString(),integrity_passed:registered?!!registered.integrityPassed:true}});
+    db.submissions.forEach(s=>{if(s.studentEmail.toLowerCase()===oldLow){s.studentName=name;s.studentEmail=email;s.program=program;}});
+    db_manualGrades.forEach(g=>{if(g.email.toLowerCase()===oldLow){g.name=name;g.email=email;g.program=program;}});
+    db_students=db_students.filter(s=>s.email.toLowerCase()!==oldLow);
+    db_students.push({email,name,programs:program,registeredAt:(registered&&registered.registeredAt)||new Date().toISOString(),integrityPassed:registered?!!registered.integrityPassed:true});
+    const changed=[];
+    db.exams.forEach(exam=>{const a=exam.studentAttempts||{};const k=Object.keys(a).find(x=>x.toLowerCase()===oldLow);if(k&&k!==email){a[email]=a[k];delete a[k];changed.push(exam);}});
+    await Promise.all(changed.map(syncExam)); saveDB(); closeModal('modal-edit-student'); toast('Student information updated.'); if(currentProgram)renderProgTab();else renderDashboard();
+  }catch(e){console.error('Student update failed:',e);toast('Could not save student changes: '+e.message);}
 }
 
 async function saveManualGrade(){
@@ -2543,11 +2391,7 @@ async function saveManualGrade(){
   // Sync to Supabase
   await sbFetch('ep_manual_grades',{
     method:'POST', headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:{
-      id:entry.id,email:entry.email,name:entry.name,program:entry.program,
-      category:entry.category,label:entry.label,grade:entry.grade,
-      max_grade:entry.maxGrade,date:entry.date
-    }
+    body:{id:entry.id,email:entry.email,name:entry.name,program:entry.program,category:entry.category,label:entry.label,grade:entry.grade,max_grade:entry.maxGrade,date:entry.date}
   }).catch(e=>console.warn('Manual grade sync error:',e));
 
   closeModal('modal-manual-grade');
@@ -2591,52 +2435,24 @@ function closeDashDetail(){
   }
 }
 
-function openExamDetail(eid){
-  const exam=db.exams.find(e=>e.id===eid);
-  if(!exam) return;
-  currentExamId=eid;
-  const letters=['A','B','C','D'];
-  const typeLabel={exam:'📝 Exam',review:'🔍 Review',final:'🎓 Final Exam',workbook:'📚 Workbook'};
-  const subCount=db.submissions.filter(s=>s.examId===eid).length;
-  const passCount=db.submissions.filter(s=>s.examId===eid&&s.percentage>=80).length;
-
-  const questionsHTML=exam.questions.length
-    ?exam.questions.map((q,i)=>`
-      <div style="background:var(--bg);border-radius:10px;padding:14px 16px;margin-bottom:10px;border:1px solid var(--border);">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-          <div style="font-weight:500;font-size:13px;flex:1;">${i+1}. ${q.text}</div>
-          <div style="display:flex;gap:6px;flex-shrink:0;">
-            <button class="btn btn-outline btn-xs" data-action="edit" data-qi="${i}">✏</button>
-            <button class="btn btn-danger btn-xs" data-action="del" data-qi="${i}">✕</button>
-          </div>
-        </div>
-        <div style="margin-top:8px;padding-left:12px;">
-          ${q.options.filter(o=>o).map((o,oi)=>`
-            <div style="font-size:12px;margin-bottom:3px;color:${oi===q.correct?'var(--green)':'var(--text)'};">
-              ${oi===q.correct?'✓ ':'   '}${letters[oi]}. ${o}
-            </div>`).join('')}
-        </div>
-      </div>`).join('')
-    :'<div class="empty"><div class="empty-icon">❓</div>No questions yet.</div>';
-
-  showDashDetail(`
-    <div style="max-width:700px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:20px;">
-        <div>
-          <h2 style="font-size:22px;margin-bottom:4px;">${exam.title}</h2>
-          <div style="font-size:12px;color:var(--muted);">${exam.program||'General'} · ${typeLabel[exam.examType||'exam']} · ${exam.questions.length} questions</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px);">${subCount} submission${subCount!==1?'s':''} · ${subCount?passCount+' passed':''}</div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-outline btn-sm" onclick="toggleExamOpen('${eid}');openExamDetail('${eid}')">${exam.open?'🔒 Close':'🔓 Open'}</button>
-          <button class="btn btn-outline btn-sm" onclick="openAddQ()">+ Add Question</button>
-          <button class="btn btn-outline btn-sm" onclick="printExamAsDoc('${eid}')">🖨 Print</button>
-          <button class="btn btn-danger btn-sm" onclick="openDeleteExamModal('${eid}')">🗑 Delete</button>
-        </div>
-      </div>
-      <div id="exam-detail-questions">${questionsHTML}</div>
-    </div>`);
+// Sync background
+async function syncFromSupabase(){
+  try{
+    const [exams,subs]=await Promise.all([
+      sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
+      sbFetch('ep_submissions?order=date_taken.asc')
+    ]);
+    db.exams=(exams||[]).map(e=>({id:e.id,title:e.title,program:e.program||'',examType:e.exam_type||'exam',teacherEmail:e.teacher_email||'',open:e.open,questions:e.questions||[],studentAttempts:e.student_attempts||{},allowedEmails:e.allowed_emails||[],isRetakeExam:e.is_retake_exam||false,createdFrom:e.created_from||'',createdAt:e.created_at}));
+    db.submissions=(subs||[]).map(s=>({id:s.id,examId:s.exam_id,examTitle:s.exam_title||'',studentName:s.student_name,studentEmail:s.student_email,program:s.program,score:s.score,total:s.total,percentage:s.percentage,detail:s.detail||[],attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,attemptsLeft:s.attempts_left||0,date:s.date_taken}));
+    const sid=(document.querySelector('.screen.active')||{}).id;
+    if(sid==='screen-teacher'){
+      if(teacherTab==='dashboard'&&!currentProgram) renderDashboard();
+      else if(currentProgram) renderProgTab();
+    } else if(sid==='screen-student-exams'&&ss._portalName)
+      _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
+  }catch(e){}
 }
+
 
 // ═══════════════════════════════════════════════════════════════
 //  EXAM CRUD
@@ -3436,7 +3252,7 @@ async function qbRefreshBridge(){
   const allBanks=[
     ...qbBanks.map(b=>({...b,_source:'qb'})),
     ...db_banks.map(b=>({...b,_source:'ep'}))
-  ].filter(b=>b&&b.name&&b.name!=='undefined'&&b.name.trim()!=='');
+  ];
 
   sel.innerHTML='<option value="">— Select a question bank —</option>';
 
@@ -3559,7 +3375,6 @@ async function syncFromSupabase(){
     db.exams=(exams||[]).map(e=>({
       id:e.id,title:e.title,program:e.program||'',
       examType:e.exam_type||'exam',
-      allowReview:e.allow_review||false,
       teacherEmail:e.teacher_email||'',open:e.open,
       questions:e.questions||[],studentAttempts:e.student_attempts||{},
       allowedEmails:e.allowed_emails||[],
@@ -3574,10 +3389,7 @@ async function syncFromSupabase(){
       attemptsUsed:s.attempts_used||1,attemptsMax:s.attempts_max||3,
       attemptsLeft:s.attempts_left||0,date:s.date_taken
     }));
-    db_students=(students||[]).map(s=>({
-      email:s.email,name:s.name,programs:s.programs||'',
-      registeredAt:s.registered_at,integrityPassed:s.integrity_passed
-    }));
+    db_students=(students||[]).map(s=>({email:s.email,name:s.name,programs:s.programs||'',registeredAt:s.registered_at,integrityPassed:s.integrity_passed}));
     // Silently refresh current view
     const sid=(document.querySelector('.screen.active')||{}).id;
     if(sid==='screen-teacher' && teacherTab==='dashboard' && !currentProgram) renderDashboard();
@@ -3980,6 +3792,11 @@ function _renderExamList(name, email, program){
     const locked  = rec ? (rec.locked || rec.count>=rec.max) : false;
     const best    = rec ? rec.bestScore : null;
     const taken   = rec && rec.count>0;
+    const reviewSub = db.submissions.find(s=>
+      s.studentEmail.toLowerCase()===email.toLowerCase() &&
+      (s.examId===e.id || (s.examTitle&&s.examTitle===e.title))
+    );
+    const canReview = reviewSub && reviewSub.detail && reviewSub.detail.length;
 
     let statusBadge='';
     if(isRetake){
@@ -3995,9 +3812,6 @@ function _renderExamList(name, email, program){
     const scoreNote = taken && best!==null
       ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;">Best score: <strong style="color:${best>=80?'var(--green)':'var(--accent)'};">${best}%</strong> · ${rec.count}/${rec.max} attempts used</div>`
       : '';
-    const reviewBtn = taken && e.allowReview
-      ? `<button class="btn btn-outline btn-sm" style="font-size:12px;" data-review="${e.id}">📖 Review Answers</button>`
-      : '';
 
     return `<div style="background:var(--surface);border:1.5px solid ${isRetake?'var(--accent2)':'var(--border)'};border-radius:12px;padding:18px 22px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;${isRetake?'box-shadow:0 0 0 3px var(--accent2-light);':''}">
       <div>
@@ -4007,16 +3821,41 @@ function _renderExamList(name, email, program){
         <div style="font-size:12px;color:var(--muted);">${e.questions.length} question${e.questions.length!==1?'s':''}</div>
         ${scoreNote}
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
-        ${reviewBtn}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        ${canReview?`<button class="btn btn-outline" data-review-sid="${reviewSub.id}">Review Answers</button>`:''}
         ${!locked ? `<button class="btn btn-primary" data-eid="${e.id}">Take Exam →</button>`
-                 : `<span style="font-size:12px;color:var(--muted);">Contact teacher</span>`}
+                 : `<span style="font-size:12px;color:var(--muted);align-self:center;">Contact teacher</span>`}
       </div>
     </div>`;
   }).join('');
 
   el.querySelectorAll('[data-eid]').forEach(btn=>btn.addEventListener('click',()=>goSignIn(btn.dataset.eid)));
-  el.querySelectorAll('[data-review]').forEach(btn=>btn.addEventListener('click',()=>showStudentReview(btn.dataset.review)));
+  el.querySelectorAll('[data-review-sid]').forEach(btn=>btn.addEventListener('click',()=>showStudentAnswerReview(btn.dataset.reviewSid)));
+}
+
+function showStudentAnswerReview(sid){
+  const sub=db.submissions.find(s=>s.id===sid);
+  if(!sub){ toast('Review not found.'); return; }
+  const exam=db.exams.find(e=>e.id===sub.examId);
+  showScreen('screen-results');
+  document.getElementById('results-box').innerHTML=`
+    <div class="results-score">
+      <div style="font-size:18px;font-family:'DM Serif Display',serif;margin-bottom:3px;">${sub.studentName}</div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:12px;">${sub.program} · ${sub.studentEmail}</div>
+      <div style="font-size:16px;font-weight:600;margin-bottom:6px;">${exam?exam.title:(sub.examTitle||'Exam')}</div>
+      <div class="results-stats" style="margin-top:16px;">
+        <div class="stat-pill"><div class="val">${sub.score}</div><div class="lbl">Correct</div></div>
+        <div class="stat-pill"><div class="val">${sub.total-sub.score}</div><div class="lbl">Wrong</div></div>
+        <div class="stat-pill"><div class="val">${sub.percentage}%</div><div class="lbl">Score</div></div>
+      </div>
+    </div>
+    <div style="margin-top:22px;">
+      <div style="font-size:15px;font-weight:600;margin-bottom:12px;">Your Answer Review</div>
+      ${answerReviewHTML(sub.detail,{showCorrect:true})}
+    </div>
+    <div style="text-align:center;margin-top:20px;">
+      <button class="btn btn-outline" onclick="refreshStudentExamList()">← Back to My Exams</button>
+    </div>`;
 }
 
 function goSignIn(examId){
@@ -4239,15 +4078,13 @@ function showResults(sub,exam,attemptInfo){
 
   // Use this attempt's detail if available, otherwise fall back to stored detail
   const detail = info.thisDetail || sub.detail;
-  const detailHTML = detail.map((d,i)=>`
-    <div class="review-item" style="border-left:3px solid ${d.isCorrect?'var(--green)':'var(--accent)'};">
-      <div class="rq">Q${i+1}: ${d.q}</div>
-      ${d.isCorrect
-        ? `<div class="ra"><span style="color:var(--green);font-size:13px;">✓ Correct</span></div>`
-        : `<div class="ra"><span class="ra-label">Your answer:</span> <span style="color:var(--accent);">${d.given!==null?letters[d.given]+'. '+d.options[d.given]:'Not answered'}</span></div>
-           <div class="ra" style="margin-top:4px;"><span style="font-size:12px;color:var(--muted);font-style:italic;">Review this question to find the correct answer.</span></div>`
-      }
-    </div>`).join('');
+  const detailHTML = answerReviewHTML(detail,{showCorrect:true});
+  const reviewPanel = detail&&detail.length
+    ? `<details style="background:var(--bg);border-radius:12px;padding:14px 16px;">
+         <summary style="cursor:pointer;font-weight:600;font-size:15px;">Show My Answer Review</summary>
+         <div style="margin-top:14px;">${detailHTML}</div>
+       </details>`
+    : '';
 
   // Score stats for THIS attempt
   const thisScore_val = info.thisScore !== undefined ? info.thisScore : sub.percentage;
@@ -4276,13 +4113,7 @@ function showResults(sub,exam,attemptInfo){
     </div>
     <div id="email-status-box"></div>
     <div style="margin-top:22px;">
-      ${sub.attemptsLeft===0
-        ? `<div style="font-size:15px;font-weight:600;margin-bottom:12px;">Answer Review — Final Attempt</div>${detailHTML}`
-        : `<div style="background:var(--bg);border-radius:10px;padding:16px;font-size:13px;color:var(--muted);text-align:center;">
-            Detailed review is available on your final attempt.<br>
-            <strong style="color:var(--text);">You have ${sub.attemptsLeft} attempt${sub.attemptsLeft!==1?'s':''} remaining.</strong>
-           </div>`
-      }
+      ${reviewPanel}
     </div>
     <div style="text-align:center;margin-top:20px;">
       <button class="btn btn-outline" onclick="refreshStudentExamList()">← Back to My Exams</button>
