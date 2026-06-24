@@ -1688,7 +1688,13 @@ function renderProgExams(el,prog,exams){
       else if(action==='rename'){ openRenameExamModal(eid); }
       else if(action==='print'){ printExamAsDoc(eid); }
       else if(action==='delete'){ openDeleteExamModal(eid); }
-      else if(action==='set-type'){
+      else if(action==='toggle-morning'){
+        const exam=db.exams.find(e=>e.id===eid);
+        if(exam){ exam.openMorning=!exam.openMorning; saveDB(); await syncExam(exam).catch(()=>{}); renderProgTab(); toast('Morning: '+(exam.openMorning?'Open ✓':'Closed')); }
+      } else if(action==='toggle-evening'){
+        const exam=db.exams.find(e=>e.id===eid);
+        if(exam){ exam.openEvening=!exam.openEvening; saveDB(); await syncExam(exam).catch(()=>{}); renderProgTab(); toast('Evening: '+(exam.openEvening?'Open ✓':'Closed')); }
+      } else if(action==='set-type'){
         const exam=db.exams.find(e=>e.id===eid);
         if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Type updated'); }
       } else if(action==='toggle-review'){
@@ -2669,16 +2675,21 @@ function openNewExamModal(){
   document.getElementById('ne-program').value='';
   openModal('modal-new-exam');
 }
-function createExam(){
+async function createExam(){
   const title   = document.getElementById('ne-title').value.trim();
   const program = document.getElementById('ne-program').value;
   if(!title){ toast('⚠ Please enter an exam title.'); return; }
   if(!program){ toast('⚠ Please select a program for this exam.'); return; }
   const examType = (document.getElementById('ne-type')||{value:'exam'}).value;
-  const exam = { id: Date.now().toString(), title, program, examType:examType||'exam', teacherEmail:db.settings.teacherEmail||'', open:true, questions:[] };
-  db.exams.push(exam); saveDB(); closeModal('modal-new-exam');
-  syncExam(exam).catch(()=>{});
-  currentExamId=exam.id; showTeacherTab('dashboard');
+  const exam = { id: Date.now().toString(), title, program, examType:examType||'exam', teacherEmail:db.settings.teacherEmail||'', open:true, questions:[], createdAt:new Date().toISOString() };
+  db.exams.push(exam);
+  closeModal('modal-new-exam');
+  // Await sync so exam is in Supabase BEFORE we navigate away
+  await syncExam(exam).catch(e=>console.warn('Exam sync:',e));
+  saveDB();
+  currentExamId=exam.id;
+  toast('✓ Exam "'+title+'" created!');
+  showTeacherTab('dashboard');
 }
 // ── Trash system ──
 // db.trash = [{...exam, deletedAt: ISO string}]
