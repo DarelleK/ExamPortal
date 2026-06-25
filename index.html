@@ -2710,8 +2710,8 @@ async function createExam(){
   }
 }
 // ── Trash system ──
-// db.trash = [{...exam, deletedAt: ISO string}]
-if(!db.trash) db.trash=[];
+// ── Trash system — shared via Supabase ──
+// Trash data lives in ep_exams (is_trashed=true) not localStorage
 
 function openDeleteExamModal(id){
   const exam = db.exams.find(e=>e.id===id);
@@ -2722,43 +2722,58 @@ function openDeleteExamModal(id){
   openModal('modal-delete-exam');
 }
 
-function deleteExam(id){
+async function deleteExam(id){
   const exam = db.exams.find(e=>e.id===id);
   if(!exam) return;
-  // Move to trash instead of permanent delete
-  if(!db.trash) db.trash=[];
-  db.trash.push({...exam, deletedAt: new Date().toISOString()});
+  const deletedAt = new Date().toISOString();
+  // Remove from local db immediately
   db.exams = db.exams.filter(e=>e.id!==id);
-  db.submissions = db.submissions.filter(s=>s.examId!==id);
   if(currentExamId===id) currentExamId=null;
   saveDB();
-  // Soft delete in Supabase — mark as trashed rather than hard delete
-  sbFetch('ep_exams?id=eq.'+id,{
+  // Mark as trashed in Supabase — keeps all data intact
+  await sbFetch('ep_exams?id=eq.'+id,{
     method:'PATCH', headers:{'Prefer':'return=minimal'},
-    body:{is_trashed:true, trashed_at:new Date().toISOString()}
+    body:{is_trashed:true, trashed_at:deletedAt}
   }).catch(()=>{});
   renderDashboard();
   toast('Exam moved to Trash. You have 30 days to restore it.');
 }
 
-function openTrash(){
-  if(!db.trash) db.trash=[];
-  // Auto-purge items older than 30 days
-  const cutoff = Date.now() - 30*24*60*60*1000;
-  const purged = db.trash.filter(e=>new Date(e.deletedAt).getTime()<cutoff);
-  db.trash = db.trash.filter(e=>new Date(e.deletedAt).getTime()>=cutoff);
-  if(purged.length){ saveDB(); purged.forEach(e=>deleteExamFromDB(e.id).catch(()=>{})); }
-
+async function openTrash(){
   const el = document.getElementById('trash-list');
-  if(!db.trash.length){
-    el.innerHTML='<div class="empty"><div class="empty-icon">✅</div>Trash is empty.</div>';
-  } else {
-    el.innerHTML=db.trash.map(e=>{
-      const daysLeft = Math.ceil((new Date(e.deletedAt).getTime()+30*24*60*60*1000-Date.now())/(24*60*60*1000));
+  el.innerHTML='<div style="text-align:center;padding:20px;color:var(--muted);">Loading...</div>';
+  openModal('modal-trash');
+
+  try{
+    // Load trashed exams from Supabase — shared across all devices
+    const trashed = await sbFetch('ep_exams?is_trashed=eq.true&order=trashed_at.desc');
+    if(!trashed||!trashed.length){
+      el.innerHTML='<div class="empty"><div class="empty-icon">✅</div>Trash is empty.</div>';
+      return;
+    }
+
+    const now=Date.now();
+    const cutoff=30*24*60*60*1000;
+
+    // Auto-purge items older than 30 days
+    const toDelete=trashed.filter(e=>e.trashed_at&&(now-new Date(e.trashed_at).getTime()>cutoff));
+    for(const e of toDelete){
+      await deleteExamFromDB(e.id).catch(()=>{});
+    }
+    const active=trashed.filter(e=>!e.trashed_at||(now-new Date(e.trashed_at).getTime()<=cutoff));
+
+    if(!active.length){
+      el.innerHTML='<div class="empty"><div class="empty-icon">✅</div>Trash is empty.</div>';
+      return;
+    }
+
+    el.innerHTML=active.map(e=>{
+      const daysLeft=e.trashed_at?Math.ceil((new Date(e.trashed_at).getTime()+cutoff-now)/(24*60*60*1000)):30;
+      const qCount=(e.questions||[]).length;
       return `<div style="background:var(--bg);border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
         <div>
           <div style="font-weight:600;font-size:14px;">${e.title}</div>
-          <div style="font-size:12px;color:var(--muted);">${e.program||'General'} · ${e.questions.length} questions · Deleted ${new Date(e.deletedAt).toLocaleDateString()}</div>
+          <div style="font-size:12px;color:var(--muted);">${e.program||'No program'} · ${qCount} question${qCount!==1?'s':''} · Deleted ${e.trashed_at?new Date(e.trashed_at).toLocaleDateString():'unknown'}</div>
           <div style="font-size:11px;color:${daysLeft<=7?'var(--accent)':'var(--muted)'};">⏳ ${daysLeft} day${daysLeft!==1?'s':''} until permanent deletion</div>
         </div>
         <div style="display:flex;gap:8px;">
@@ -2767,6 +2782,7 @@ function openTrash(){
         </div>
       </div>`;
     }).join('');
+
     el.querySelectorAll('[data-action="restore"]').forEach(btn=>{
       btn.addEventListener('click',()=>restoreExam(btn.dataset.eid));
     });
@@ -2776,33 +2792,27 @@ function openTrash(){
         purgeExam(btn.dataset.eid);
       });
     });
+  }catch(e){
+    el.innerHTML='<div class="empty"><div class="empty-icon">⚠️</div>Could not load trash: '+e.message+'</div>';
   }
-  openModal('modal-trash');
 }
 
-function restoreExam(id){
-  const exam = db.trash.find(e=>e.id===id);
-  if(!exam) return;
-  db.trash = db.trash.filter(e=>e.id!==id);
-  const {deletedAt,...restored} = exam;
-  db.exams.push(restored);
-  saveDB();
-  // Un-trash in Supabase
-  sbFetch('ep_exams?id=eq.'+id,{
+async function restoreExam(id){
+  await sbFetch('ep_exams?id=eq.'+id,{
     method:'PATCH', headers:{'Prefer':'return=minimal'},
     body:{is_trashed:false, trashed_at:null}
   }).catch(()=>{});
   closeModal('modal-trash');
+  // Reload from Supabase to get the restored exam back
+  await loadFromSupabase();
   renderDashboard();
-  toast('✓ Exam "'+exam.title+'" restored successfully.');
+  toast('✓ Exam restored successfully.');
 }
 
-function purgeExam(id){
-  db.trash = db.trash.filter(e=>e.id!==id);
-  saveDB();
-  deleteExamFromDB(id).catch(()=>{});
-  openTrash(); // refresh trash view
+async function purgeExam(id){
+  await deleteExamFromDB(id).catch(()=>{});
   toast('Exam permanently deleted.');
+  openTrash(); // refresh
 }
 
 // ── Student info confirmation ──
