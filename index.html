@@ -1017,10 +1017,12 @@ function studentToTeacher(sp){
 const COMBO_PROGRAM = 'Medical Assistant + Phlebotomy + EKG';
 function examBelongsToProgram(examProgram, dashboardProgram){
   const ep = examProgram || '';
+  // Exams with no program assigned are shown everywhere so they don't get lost
+  if(!ep) return true;
   if(dashboardProgram===COMBO_PROGRAM){
-    return ep===COMBO_PROGRAM || ep==='Medical Assistant' || ep==='EKG' || ep==='Phlebotomy' || !ep;
+    return ep===COMBO_PROGRAM || ep==='Medical Assistant' || ep==='EKG' || ep==='Phlebotomy';
   }
-  return ep===dashboardProgram || (dashboardProgram==='General'&&!ep);
+  return ep===dashboardProgram;
 }
 function studentBelongsToProgram(studentProgram, dashboardProgram){
   const sp = studentProgram || '';
@@ -1699,7 +1701,13 @@ function renderProgExams(el,prog,exams){
         if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Type updated'); }
       } else if(action==='toggle-review'){
         const exam=db.exams.find(e=>e.id===eid);
-        if(exam){ exam.allowReview=!exam.allowReview; saveDB(); syncExam(exam).catch(()=>{}); renderProgTab(); toast(exam.allowReview?'📖 Answer review enabled for students.':'Answer review disabled.'); }
+        if(exam){
+          exam.allowReview=!exam.allowReview;
+          saveDB();
+          syncExam(exam).catch(()=>{});
+          toast(exam.allowReview?'📖 Answer review enabled — students can now see their results.':'Answer review disabled.');
+          renderProgTab();
+        }
       }
     });
     // Also handle select onChange
@@ -2689,7 +2697,17 @@ async function createExam(){
   saveDB();
   currentExamId=exam.id;
   toast('✓ Exam "'+title+'" created!');
-  showTeacherTab('dashboard');
+  // If we're already in a program, stay there and switch to exams tab
+  if(currentProgram){
+    currentProgTab='exams';
+    ['exams','subs','grades','settings'].forEach(t=>{
+      const btn=document.getElementById('ptab-'+t);
+      if(btn) btn.classList.toggle('active',t==='exams');
+    });
+    renderProgTab();
+  } else {
+    showTeacherTab('dashboard');
+  }
 }
 // ── Trash system ──
 // db.trash = [{...exam, deletedAt: ISO string}]
