@@ -595,10 +595,9 @@ textarea{resize:vertical;}
         <option value="">— All Programs (General) —</option>
         <option>Nurse Aide</option>
         <option>Medication Aide</option>
-        <option>Medical Assistant</option>
-        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
       </select>
     </div>
 
@@ -752,6 +751,7 @@ textarea{resize:vertical;}
     <div class="field"><label>Category</label>
       <select id="mg-category">
         <option value="exam">Exam</option>
+        <option value="review">Review</option>
         <option value="final">Final Exam</option>
         <option value="workbook">Workbook</option>
         <option value="skills">Skills</option>
@@ -831,10 +831,9 @@ textarea{resize:vertical;}
         <option value="">— General —</option>
         <option>Nurse Aide</option>
         <option>Medication Aide</option>
-        <option>Medical Assistant</option>
-        <option>Medical Assistant + Phlebotomy + EKG</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
       </select>
     </div>
     <div class="modal-footer">
@@ -907,9 +906,9 @@ textarea{resize:vertical;}
         <option>Nurse Aide Evening</option>
         <option>Medication Aide Morning</option>
         <option>Medication Aide Evening</option>
-        <option>Medical Assistant</option>
         <option>Phlebotomy</option>
         <option>EKG</option>
+        <option>Medical Assistant + Phlebotomy + EKG</option>
       </select>
     </div>
     <input type="hidden" id="edit-stu-sid"/>
@@ -4234,8 +4233,15 @@ function nextQ(){
 function submitExam(){
   const exam=db.exams.find(e=>e.id===ss.examId);
   let score=0; const detail=[];
-  exam.questions.forEach((q,i)=>{
-    const given=ss.answers[i]!==undefined?ss.answers[i]:null;
+
+  // Grade using qOrder — answers are stored by original question index
+  // ss.qOrder[displayPosition] = originalQuestionIndex
+  // ss.answers[originalQuestionIndex] = student's answer (original option index)
+  const qOrder = ss.qOrder && ss.qOrder.length ? ss.qOrder : exam.questions.map((_,i)=>i);
+
+  qOrder.forEach((qIdx)=>{
+    const q=exam.questions[qIdx];
+    const given=ss.answers[qIdx]!==undefined?ss.answers[qIdx]:null;
     const isCorrect=given===q.correct;
     if(isCorrect)score++;
     detail.push({q:q.text,options:q.options,correct:q.correct,given,isCorrect});
