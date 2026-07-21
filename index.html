@@ -4171,23 +4171,9 @@ function _renderExamList(name, email, program){
   });
   allGrades.sort((a,b)=>a.title.localeCompare(b.title));
 
-  const gradesHTML = allGrades.length ? `
-    <table style="width:100%;border-collapse:collapse;">
-      <thead><tr style="border-bottom:2px solid var(--border);">
-        <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Item</th>
-        <th style="text-align:center;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Score</th>
-        <th style="text-align:center;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Result</th>
-      </tr></thead>
-      <tbody>${allGrades.map(({title,icon,pct})=>{
-        const pass=pct>=80;
-        return `<tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:10px;font-size:13px;">${icon} ${title}</td>
-          <td style="padding:10px;text-align:center;font-size:14px;font-weight:600;color:${pass?'var(--green)':'var(--accent)'};">${pct}%</td>
-          <td style="padding:10px;text-align:center;"><span style="font-size:11px;font-weight:600;background:${pass?'var(--green-light)':'var(--accent-light)'};color:${pass?'var(--green)':'var(--accent)'};padding:3px 10px;border-radius:20px;">${pass?'Pass':'Fail'}</span></td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table>` : '<div style="font-size:13px;color:var(--muted);padding:12px 0;">No grades yet.</div>';
-
+  // Store all data for tab switching and render active tab
+  window._studentTabData = {todo, done, allGrades, notifHTML, typeIcon, email};
+  switchStudentTab(window._studentActiveTab||'todo');
 }
 
 function dismissGradeNotif(id){
