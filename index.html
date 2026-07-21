@@ -517,15 +517,18 @@ textarea{resize:vertical;}
 </div>
 
 <!-- ═══ STUDENT EXAM LIST — Step 2: Pick Exam ═══ -->
-<div id="screen-student-exams" class="screen" style="align-items:center;justify-content:center;padding:40px 20px;">
-  <div style="max-width:480px;width:100%;">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;">
-      <button class="btn btn-ghost btn-sm" onclick="goStudentPortal()">←</button>
-      <div>
-        <h2 style="font-size:24px;margin-bottom:2px;" id="student-exams-title">Available Exams</h2>
-        <div style="font-size:13px;color:var(--muted);" id="student-exams-sub"></div>
-      </div>
+<div id="screen-student-exams" class="screen" style="flex-direction:column;padding:0;">
+  <!-- Student top bar -->
+  <div style="background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10;flex-shrink:0;">
+    <button class="btn btn-ghost btn-sm" onclick="goStudentPortal()">←</button>
+    <div style="flex:1;">
+      <div style="font-size:18px;font-family:'DM Serif Display',serif;" id="student-exams-title">My Exams</div>
+      <div style="font-size:12px;color:var(--muted);" id="student-exams-sub"></div>
     </div>
+    <button class="btn btn-outline btn-sm" onclick="refreshStudentExamList()">↺ Refresh</button>
+  </div>
+  <!-- Scrollable content -->
+  <div style="flex:1;overflow-y:auto;padding:24px;max-width:700px;width:100%;margin:0 auto;">
     <div id="student-exam-list"></div>
   </div>
 </div>
@@ -4035,84 +4038,180 @@ function _proceedToExams(name,email,program){
 
 
 function _renderExamList(name, email, program){
-  const teacherProg = studentToTeacher(program);
+  ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program;
+  studentProgram=program;
 
-  // Regular open exams for this program
-  const exams = db.exams.filter(e=>{
-    if(!e.open || !e.questions.length || e.isRetakeExam) return false;
-    return examVisibleTo(e, program);
-  });
-
-  // Retake exams specifically for this student — deduplicate: one per original title
-  const allRetakeExams = db.exams.filter(e=>
-    e.isRetakeExam && e.open && e.questions.length &&
-    e.allowedEmails && e.allowedEmails.includes(email)
-  );
-  // Keep only the most recent retake per title
-  const retakeByTitle={};
-  allRetakeExams.forEach(e=>{
-    const key=e.title;
-    if(!retakeByTitle[key]||new Date(e.createdAt)>new Date(retakeByTitle[key].createdAt))
-      retakeByTitle[key]=e;
-  });
-  const retakeExams=Object.values(retakeByTitle);
-
-  document.getElementById('student-exams-title').textContent = name+"'s Exams";
+  document.getElementById('student-exams-title').textContent = name+"'s Portal";
   document.getElementById('student-exams-sub').textContent = program;
 
   const el = document.getElementById('student-exam-list');
-  const allExams = [...exams, ...retakeExams];
 
-  if(!allExams.length){
-    el.innerHTML='<div class="empty"><div class="empty-icon">📭</div>No exams are open for your program right now.</div>';
-    return;
-  }
+  // All visible open exams
+  const openExams = db.exams.filter(e=>{
+    if(!e.questions.length || e.isRetakeExam) return false;
+    if(!examVisibleTo(e, program)) return false;
+    const isMorning = program.includes('Morning');
+    const isEvening = program.includes('Evening');
+    const isShift = e.program==='Nurse Aide'||e.program==='Medication Aide';
+    if(isShift){
+      if(!e.openMorning && !e.openEvening) return e.open;
+      if(isMorning) return !!e.openMorning;
+      if(isEvening) return !!e.openEvening;
+      return e.open;
+    }
+    return e.open;
+  });
 
-  el.innerHTML = allExams.map(e=>{
-    const isRetake = !!e.isRetakeExam;
-    const rec = e.studentAttempts && e.studentAttempts[email] ? e.studentAttempts[email] : null;
+  // Retake exams for this student
+  const retakeExams = db.exams.filter(e=>
+    e.isRetakeExam && e.open && e.questions.length &&
+    e.allowedEmails && e.allowedEmails.includes(email)
+  );
+  const retakeByTitle={};
+  retakeExams.forEach(e=>{
+    if(!retakeByTitle[e.title]||new Date(e.createdAt)>new Date(retakeByTitle[e.title].createdAt))
+      retakeByTitle[e.title]=e;
+  });
+  const retakes=Object.values(retakeByTitle);
+
+  const allExams=[...openExams,...retakes].sort((a,b)=>a.title.localeCompare(b.title));
+
+  // Classify: todo = never taken, done = taken at least once
+  const todo=[], done=[];
+  allExams.forEach(e=>{
+    const rec = e.studentAttempts&&e.studentAttempts[email] ? e.studentAttempts[email] : null;
     const attLeft = rec ? Math.max(0, rec.max - rec.count) : MAX_ATTEMPTS;
-    const locked  = rec ? (rec.locked || rec.count>=rec.max) : false;
+    const locked  = rec ? (rec.locked||rec.count>=rec.max) : false;
     const best    = rec ? rec.bestScore : null;
     const taken   = rec && rec.count>0;
+    const sub     = db.submissions.find(s=>s.studentEmail===email&&s.examId===e.id);
+    if(taken){ done.push({e,rec,attLeft,locked,best,sub}); }
+    else { todo.push({e,attLeft,best,sub}); }
+  });
 
-    let statusBadge='';
-    if(isRetake){
-      statusBadge=`<span style="font-size:11px;background:var(--accent2-light);color:var(--accent2);padding:2px 9px;border-radius:10px;font-weight:600;">🔄 Retake — ${attLeft} attempt${attLeft!==1?'s':''} left</span>`;
-    } else if(locked){
-      statusBadge=`<span style="font-size:11px;background:#f3f4f6;color:var(--muted);padding:2px 9px;border-radius:10px;">🔒 Locked</span>`;
-    } else if(taken){
-      statusBadge=`<span style="font-size:11px;background:var(--green-light);color:var(--green);padding:2px 9px;border-radius:10px;">${attLeft} attempt${attLeft!==1?'s':''} left</span>`;
-    } else {
-      statusBadge=`<span style="font-size:11px;background:var(--accent-light);color:var(--accent);padding:2px 9px;border-radius:10px;">New</span>`;
+  const typeIcon={exam:'📝',review:'🔍',final:'🎓',workbook:'📚',skills:'🏋'};
+
+  // ── Grade update notifications ──
+  const notifKey = 'ep_grade_notifs_'+email;
+  const dismissed = JSON.parse(sessionStorage.getItem(notifKey)||'[]');
+  // Collect all grade changes not yet dismissed
+  const notifications=[];
+  const allSubs = db.submissions.filter(s=>s.studentEmail===email);
+  allSubs.forEach(s=>{
+    const notifId = 'sub_'+s.id+'_'+s.percentage;
+    const stored = localStorage.getItem('ep_seen_grade_'+s.id);
+    if(stored && parseInt(stored) !== s.percentage && !dismissed.includes(notifId)){
+      const exam=db.exams.find(e=>e.id===s.examId);
+      notifications.push({id:notifId, msg:'Your grade for <strong>'+(exam?exam.title:s.examTitle||'an exam')+'</strong> was updated to <strong style="color:'+(s.percentage>=80?'var(--green)':'var(--accent)')+';">'+s.percentage+'%</strong> by your teacher.'});
     }
+    // Update stored grade
+    localStorage.setItem('ep_seen_grade_'+s.id, s.percentage);
+  });
 
-    const scoreNote = taken && best!==null
-      ? `<div style="font-size:11px;color:var(--muted);margin-top:3px;">Best score: <strong style="color:${best>=80?'var(--green)':'var(--accent)'};">${best}%</strong> · ${rec.count}/${rec.max} attempts used</div>`
-      : '';
-    const reviewBtn = taken && e.allowReview
-      ? `<button class="btn btn-outline btn-sm" style="font-size:12px;" data-review="${e.id}">📖 Review Answers</button>`
-      : '';
+  const notifHTML = notifications.length ? notifications.map(n=>`
+    <div id="notif-${n.id}" style="background:var(--gold-light);border:1px solid #f0d080;color:#8a6000;border-radius:10px;padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+      <div style="font-size:13px;line-height:1.5;">🔔 ${n.msg}</div>
+      <button onclick="dismissGradeNotif('${n.id}')" style="background:none;border:none;cursor:pointer;font-size:16px;color:#8a6000;flex-shrink:0;padding:0;">✕</button>
+    </div>`).join('') : '';
 
-    return `<div style="background:var(--surface);border:1.5px solid ${isRetake?'var(--accent2)':'var(--border)'};border-radius:12px;padding:18px 22px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;${isRetake?'box-shadow:0 0 0 3px var(--accent2-light);':''}">
+  // ── TO-DO section ──
+  const todoHTML = todo.length ? todo.map(({e,attLeft})=>{
+    const icon=typeIcon[e.examType||'exam']||'📝';
+    return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
       <div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap;">
-          <span style="font-weight:600;font-size:15px;">${e.title}</span>${statusBadge}
-        </div>
-        <div style="font-size:12px;color:var(--muted);">${e.questions.length} question${e.questions.length!==1?'s':''}</div>
-        ${scoreNote}
+        <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${e.questions.length} questions · ${attLeft} attempt${attLeft!==1?'s':''} available</div>
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+      <button class="btn btn-primary btn-sm" data-eid="${e.id}">Take Exam →</button>
+    </div>`;
+  }).join('') : '<div style="font-size:13px;color:var(--muted);padding:12px 0;">No new exams right now.</div>';
+
+  // ── DONE section ──
+  const doneHTML = done.length ? done.map(({e,attLeft,locked,best,sub})=>{
+    const icon=typeIcon[e.examType||'exam']||'📝';
+    const pass = best!==null && best>=80;
+    const reviewBtn = e.allowReview&&sub ? `<button class="btn btn-outline btn-xs" data-review="${e.id}">📖 Review</button>` : '';
+    const retakeBtn = !locked && attLeft>0 ? `<button class="btn btn-primary btn-xs" data-eid="${e.id}">↩ Retake</button>` : '';
+    return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div>
+        <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">
+          ${locked?'No attempts left':'<strong>'+attLeft+'</strong> attempt'+(attLeft!==1?'s':'')+' left'}
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        ${best!==null?`<span style="font-size:13px;font-weight:600;color:${pass?'var(--green)':'var(--accent)'};">${best}% <span style="font-size:11px;background:${pass?'var(--green-light)':'var(--accent-light)'};padding:2px 7px;border-radius:8px;">${pass?'Pass':'Fail'}</span></span>`:''}
+        ${retakeBtn}
         ${reviewBtn}
-        ${!locked ? `<button class="btn btn-primary" data-eid="${e.id}">Take Exam →</button>`
-                 : `<span style="font-size:12px;color:var(--muted);">Contact teacher</span>`}
       </div>
     </div>`;
-  }).join('');
+  }).join('') : '<div style="font-size:13px;color:var(--muted);padding:12px 0;">No completed exams yet.</div>';
 
+  // ── GRADES section — matches teacher gradebook ──
+  const allGrades=[];
+  // Exam grades from submissions
+  db.submissions.filter(s=>s.studentEmail===email).forEach(s=>{
+    const exam=db.exams.find(e=>e.id===s.examId)||db.exams.find(e=>e.title===s.examTitle);
+    const icon=typeIcon[(exam?exam.examType:null)||'exam']||'📝';
+    allGrades.push({title:exam?exam.title:s.examTitle||'Exam',icon,pct:s.percentage,source:'exam'});
+  });
+  // Manual grades from teacher
+  db_manualGrades.filter(g=>g.email===email).forEach(g=>{
+    const cat=GRADE_CATEGORIES.find(c=>c.key===g.category);
+    allGrades.push({title:g.label,icon:cat?cat.icon:'📝',pct:Math.round(g.grade/g.maxGrade*100),source:'manual'});
+  });
+  allGrades.sort((a,b)=>a.title.localeCompare(b.title));
+
+  const gradesHTML = allGrades.length ? `
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="border-bottom:2px solid var(--border);">
+        <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Item</th>
+        <th style="text-align:center;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Score</th>
+        <th style="text-align:center;padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);">Result</th>
+      </tr></thead>
+      <tbody>${allGrades.map(({title,icon,pct})=>{
+        const pass=pct>=80;
+        return `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:10px;font-size:13px;">${icon} ${title}</td>
+          <td style="padding:10px;text-align:center;font-size:14px;font-weight:600;color:${pass?'var(--green)':'var(--accent)'};">${pct}%</td>
+          <td style="padding:10px;text-align:center;"><span style="font-size:11px;font-weight:600;background:${pass?'var(--green-light)':'var(--accent-light)'};color:${pass?'var(--green)':'var(--accent)'};padding:3px 10px;border-radius:20px;">${pass?'Pass':'Fail'}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>` : '<div style="font-size:13px;color:var(--muted);padding:12px 0;">No grades yet.</div>';
+
+  function section(icon,title,count,content){
+    return `<div style="margin-bottom:28px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span style="font-size:18px;">${icon}</span>
+        <h3 style="font-size:16px;font-family:'DM Serif Display',serif;">${title}</h3>
+        <span style="font-size:12px;background:var(--border);color:var(--muted);padding:2px 8px;border-radius:10px;">${count}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">${content}</div>
+    </div>`;
+  }
+
+  el.innerHTML =
+    notifHTML +
+    section('📋','To-Do',todo.length,todoHTML) +
+    '<div style="border-top:1px solid var(--border);margin:4px 0 28px;"></div>' +
+    section('✅','Done',done.length,doneHTML) +
+    '<div style="border-top:1px solid var(--border);margin:4px 0 28px;"></div>' +
+    section('🎓','Grades',allGrades.length,gradesHTML);
+
+  // Wire buttons
   el.querySelectorAll('[data-eid]').forEach(btn=>btn.addEventListener('click',()=>goSignIn(btn.dataset.eid)));
   el.querySelectorAll('[data-review]').forEach(btn=>btn.addEventListener('click',()=>showStudentReview(btn.dataset.review)));
 }
+
+function dismissGradeNotif(id){
+  const notifKey='ep_grade_notifs_'+ss._portalEmail;
+  const dismissed=JSON.parse(sessionStorage.getItem(notifKey)||'[]');
+  dismissed.push(id);
+  sessionStorage.setItem(notifKey,JSON.stringify(dismissed));
+  const el=document.getElementById('notif-'+id);
+  if(el) el.remove();
+}
+
 
 function goSignIn(examId){
   const exam=db.exams.find(e=>e.id===examId);
