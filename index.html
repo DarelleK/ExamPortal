@@ -2195,6 +2195,8 @@ function showStudentReview(examId){
 
   // Show in a modal-like overlay
   const overlay=document.createElement('div');
+  overlay.id='review-overlay-'+examId;
+  overlay.dataset.examId=examId;
   overlay.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:1000;overflow-y:auto;padding:24px;';
   overlay.innerHTML=`
     <div style="max-width:680px;margin:0 auto;">
@@ -2213,7 +2215,11 @@ function showStudentReview(examId){
       ${reviewHTML}
     </div>`;
   document.body.appendChild(overlay);
-  overlay.querySelector('#close-review-btn').addEventListener('click',()=>document.body.removeChild(overlay));
+  overlay.querySelector('#close-review-btn').addEventListener('click',()=>{
+    document.body.removeChild(overlay);
+    window._studentActiveTab='done';
+    _renderExamList(ss._portalName,ss._portalEmail,ss._portalProgram);
+  });
 }
 
 // ── Teacher: view student submission detail ──
@@ -3687,8 +3693,24 @@ async function syncFromSupabase(){
     const sid=(document.querySelector('.screen.active')||{}).id;
     if(sid==='screen-teacher' && teacherTab==='dashboard' && !currentProgram) renderDashboard();
     else if(sid==='screen-teacher' && currentProgram) renderProgTab();
-    else if(sid==='screen-student-exams' && ss._portalName)
-      _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+    else if(sid==='screen-student-exams' && ss._portalName){
+      // Check if a review overlay is open and teacher has since disabled it
+      const reviewOverlay=document.querySelector('[id^="review-overlay-"]');
+      if(reviewOverlay){
+        const examId=reviewOverlay.dataset.examId;
+        const exam=db.exams.find(e=>e.id===examId);
+        if(exam && !exam.allowReview){
+          // Teacher turned off review — close overlay and go to Done tab
+          reviewOverlay.remove();
+          toast('📖 Answer review has been closed by your teacher.');
+          window._studentActiveTab='done';
+          _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+        }
+      } else {
+        // Normal background refresh of exam list
+        _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+      }
+    }
   }catch(e){ console.warn('Background sync failed:', e); /* silent fail — never wipe data */ }
 }
 
@@ -3925,8 +3947,10 @@ function goStudentPortal(){
 }
 
 // Refresh exam list using the current session (no re-login needed)
-function refreshStudentExamList(){
+async function refreshStudentExamList(){
   if(ss._portalName && ss._portalEmail && ss._portalProgram){
+    // Reload fresh data from Supabase first
+    await syncFromSupabase().catch(()=>{});
     _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
     showScreen('screen-student-exams');
   } else {
