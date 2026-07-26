@@ -2752,6 +2752,22 @@ function printGradesForProg(prog){
   const content=document.getElementById('prog-grades-printable');
   if(!content){ toast('Nothing to print.'); return; }
   const printDate=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+
+  // Clone the content so we can replace inputs with text without affecting the live view
+  const clone=content.cloneNode(true);
+
+  // Replace datetime-local inputs with their formatted text value
+  clone.querySelectorAll('input[type="datetime-local"]').forEach(inp=>{
+    const val=inp.value;
+    const span=document.createElement('span');
+    span.style.fontSize='11px';
+    span.textContent=val?fmtDateTime(new Date(val).toISOString()):'—';
+    inp.parentNode.replaceChild(span,inp);
+  });
+
+  // Remove buttons
+  clone.querySelectorAll('button').forEach(b=>b.remove());
+
   const win=window.open('','_blank');
   win.document.write('<!DOCTYPE html><html><head><title>'+prog+' — Grade Report</title><style>'
     +'*{box-sizing:border-box;}body{font-family:"Segoe UI",sans-serif;padding:32px;color:#1a1714;font-size:12px;}'
@@ -2760,10 +2776,11 @@ function printGradesForProg(prog){
     +'td{padding:6px 8px;border-bottom:1px solid #e8e3da;vertical-align:middle;font-size:11px;}'
     +'.pass{background:#ebf5f0;color:#2d6a4f;padding:2px 7px;border-radius:20px;font-weight:700;font-size:10px;display:inline-block;}'
     +'.fail{background:#faf0eb;color:#b5451b;padding:2px 7px;border-radius:20px;font-weight:700;font-size:10px;display:inline-block;}'
-    +'button,input[type="datetime-local"]{display:none;}@media print{body{padding:16px;}}</style></head><body>'
+    +'@media print{body{padding:16px;}}'
+    +'</style></head><body>'
     +'<h1>'+prog+' — Grade Report</h1>'
     +'<div class="sub">Printed on '+printDate+' · ExamPortal</div>'
-    +content.innerHTML
+    +clone.innerHTML
       .replace(/class="grade-badge grade-pass"/g,'class="pass"')
       .replace(/class="grade-badge grade-fail"/g,'class="fail"')
     +'<script>window.onload=()=>setTimeout(()=>window.print(),300);<\/script>'
