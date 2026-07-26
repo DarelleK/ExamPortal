@@ -1748,12 +1748,28 @@ function renderProgExams(el,prog,exams){
         }
       }
     });
-    // Also handle select onChange
-    if(btn.tagName==='SELECT'){
+    // Handle select and datetime-local input changes
+    if(btn.tagName==='SELECT'||btn.tagName==='INPUT'){
       btn.addEventListener('change', async ()=>{
         const eid=btn.dataset.eid;
+        const action=btn.dataset.action;
         const exam=db.exams.find(e=>e.id===eid);
-        if(exam){ exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated'); }
+        if(!exam) return;
+        if(action==='set-type'){
+          exam.examType=btn.value; saveDB(); syncExam(exam).catch(()=>{}); toast('✓ Exam type updated');
+          // Only re-render for type change (affects icon display)
+          renderProgTab();
+        } else if(action==='set-open-date'){
+          exam.openAt=btn.value?new Date(btn.value).toISOString():null;
+          if(exam.openAt && new Date(exam.openAt)<=new Date()){ exam.open=true; }
+          saveDB(); syncExam(exam).catch(()=>{}); // No re-render — just save silently
+          toast('✓ Open schedule saved');
+        } else if(action==='set-close-date'){
+          exam.closeAt=btn.value?new Date(btn.value).toISOString():null;
+          if(exam.closeAt && new Date(exam.closeAt)<new Date()){ exam.open=false; }
+          saveDB(); syncExam(exam).catch(()=>{}); // No re-render — just save silently
+          toast('✓ Close schedule saved');
+        }
       });
     }
   });
@@ -1951,12 +1967,23 @@ function renderProgGrades(el,prog,subs){
 
     const examRows=eSubs.map(s=>{
       const ex=examMap[s.examId];
+      const openVal=ex?.openAt?ex.openAt.slice(0,16):'';
+      const closeVal=ex?.closeAt?ex.closeAt.slice(0,16):'';
+      const openDisplay=ex?.openAt?fmtDateTime(ex.openAt):'—';
+      const closeDisplay=ex?.closeAt?fmtDateTime(ex.closeAt):'—';
       return `<tr>
         <td>${typeLabel[ex?.examType||'exam']||'📝 Exam'}</td>
         <td style="font-weight:500;">${ex?ex.title:s.examTitle||'—'}</td>
         <td style="text-align:center;">${s.score}/${s.total}</td>
         <td style="text-align:center;"><span class="grade-badge ${s.percentage>=80?'grade-pass':'grade-fail'}">${s.percentage}%</span></td>
-        <td style="font-size:12px;color:var(--muted);">${new Date(s.date).toLocaleDateString()}</td>
+        <td style="font-size:11px;">
+          <input type="datetime-local" value="${openVal}" style="font-size:10px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);width:155px;"
+            onchange="saveExamScheduleDate('${ex?.id||''}','open',this.value)" title="Edit open date"/>
+        </td>
+        <td style="font-size:11px;">
+          <input type="datetime-local" value="${closeVal}" style="font-size:10px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);width:155px;"
+            onchange="saveExamScheduleDate('${ex?.id||''}','close',this.value)" title="Edit close date"/>
+        </td>
       </tr>`;
     }).join('');
 
@@ -2000,7 +2027,7 @@ function renderProgGrades(el,prog,subs){
         </div>
         ${eSubs.length||manuals.length?`
         <table class="sub-table" style="width:100%;">
-          <thead><tr><th>Type</th><th>Title</th><th>Score</th><th>Grade</th><th>Date</th></tr></thead>
+          <thead><tr><th>Type</th><th>Title</th><th>Score</th><th>Grade</th><th>Start Date</th><th>End Date</th></tr></thead>
           <tbody>${examRows}${manualRows}</tbody>
         </table>`:'<div class="empty"><div class="empty-icon">📭</div>No grades yet.</div>'}
       </div>`;
@@ -4360,6 +4387,23 @@ function _renderExamList(name, email, program){
   // Store all data for tab switching and render active tab
   window._studentTabData = {todo, done, allGrades, notifHTML, typeIcon, email};
   switchStudentTab(window._studentActiveTab||'todo');
+}
+
+// Save exam schedule date from gradebook student view
+async function saveExamScheduleDate(examId, type, value){
+  if(!examId) return;
+  const exam=db.exams.find(e=>e.id===examId);
+  if(!exam) return;
+  if(type==='open'){
+    exam.openAt=value?new Date(value).toISOString():null;
+    if(exam.openAt && new Date(exam.openAt)<=new Date()) exam.open=true;
+  } else {
+    exam.closeAt=value?new Date(value).toISOString():null;
+    if(exam.closeAt && new Date(exam.closeAt)<new Date()) exam.open=false;
+  }
+  saveDB();
+  await syncExam(exam).catch(()=>{});
+  toast('✓ '+(type==='open'?'Open':'Close')+' date saved for '+exam.title);
 }
 
 function dismissGradeNotif(id){
