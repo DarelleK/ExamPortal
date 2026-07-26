@@ -1686,21 +1686,23 @@ function renderProgExams(el,prog,exams){
           <option value="workbook" ${e.examType==='workbook'?'selected':''}>📚 Workbook</option>
         </select>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;font-size:10px;" onclick="event.stopPropagation()">
-        <div>
-          <div style="color:var(--muted);margin-bottom:2px;">📅 Open from</div>
-          <input type="datetime-local" data-action="set-open-date" data-eid="${e.id}" value="${e.openAt?e.openAt.slice(0,16):''}" style="width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:10px;background:var(--bg);"/>
+      <div style="background:var(--bg);border-radius:8px;padding:8px;margin-bottom:8px;font-size:11px;" onclick="event.stopPropagation()">
+        <div style="color:var(--muted);font-weight:600;margin-bottom:6px;">⏰ Schedule (optional)</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px;align-items:center;">
+          <span style="color:var(--muted);">Open:</span>
+          <input type="datetime-local" data-action="set-open-date" data-eid="${e.id}" value="${e.openAt?e.openAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
+          <span style="color:var(--muted);">Close:</span>
+          <input type="datetime-local" data-action="set-close-date" data-eid="${e.id}" value="${e.closeAt?e.closeAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
         </div>
-        <div>
-          <div style="color:var(--muted);margin-bottom:2px;">📅 Close on</div>
-          <input type="datetime-local" data-action="set-close-date" data-eid="${e.id}" value="${e.closeAt?e.closeAt.slice(0,16):''}" style="width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:10px;background:var(--bg);"/>
-        </div>
+        ${e.openAt||e.closeAt?`<div style="margin-top:5px;font-size:10px;color:var(--accent2);">
+          ${e.openAt?'Opens: '+fmtDateTime(e.openAt):''}${e.openAt&&e.closeAt?' · ':''}${e.closeAt?'Closes: '+fmtDateTime(e.closeAt):''}
+        </div>`:''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
         ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
           ? `<button class="btn ${e.openMorning?'btn-green':'btn-outline'} btn-xs" data-action="toggle-morning" data-eid="${e.id}">Morning ${e.openMorning?'Open':'Closed'}</button>
              <button class="btn ${e.openEvening?'btn-green':'btn-outline'} btn-xs" data-action="toggle-evening" data-eid="${e.id}">Evening ${e.openEvening?'Open':'Closed'}</button>`
-          : `<button class="btn btn-outline btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔒 Close':'🔓 Open'}</button>`
+          : `<button class="btn ${e.open?'btn-green':'btn-outline'} btn-xs" data-action="toggle" data-eid="${e.id}">${e.open?'🔓 Open':'🔒 Closed'}</button>`
         }
         <button class="btn btn-outline btn-xs" data-action="rename" data-eid="${e.id}">✏ Rename</button>
         <button class="btn btn-outline btn-xs" data-action="print" data-eid="${e.id}">🖨 Print</button>
@@ -1814,13 +1816,23 @@ function renderProgSubs(el,prog,subs){
     </table>`;
   }
 
-  function render(filterSubs){
-    el.innerHTML=`<div style="margin-bottom:12px;"><input type="text" placeholder="🔍 Search by name, email, exam..." style="width:100%;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);color:var(--text);" oninput="filterSubs(this.value)"/></div>`+(hasShifts?`
+  function render(currentSubs){
+    el.innerHTML=`<div style="margin-bottom:12px;"><input type="text" id="subs-search-input" placeholder="🔍 Search by name, email, exam..." style="width:100%;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);color:var(--text);"/></div>`+(hasShifts?`
       <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
         <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
         ${shifts.map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
       </div>`:'')
-      +buildTable(filterSubs);
+      +buildTable(currentSubs);
+
+    // Wire search — filters existing rows in place
+    const searchInput=el.querySelector('#subs-search-input');
+    if(searchInput) searchInput.addEventListener('input',()=>{
+      const q=searchInput.value.toLowerCase();
+      el.querySelectorAll('#subs-table-body tr').forEach(row=>{
+        row.style.display=row.textContent.toLowerCase().includes(q)?'':'none';
+      });
+    });
+
     if(hasShifts){
       el.querySelectorAll('[data-shift]').forEach(btn=>{
         btn.addEventListener('click',()=>{
@@ -2701,10 +2713,58 @@ async function saveManualGrade(){
 function printGradesForProg(prog){
   const content=document.getElementById('prog-grades-printable');
   if(!content){ toast('Nothing to print.'); return; }
-  const date=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
-  const win=window.open('','_blank');
-  win.document.write('<!DOCTYPE html><html><head><title>'+prog+' — Grade Report</title><style>*{box-sizing:border-box;}body{font-family:"Segoe UI",sans-serif;padding:32px;color:#1a1714;font-size:13px;}h1{font-size:22px;margin-bottom:4px;}.sub{color:#7a7166;margin-bottom:24px;font-size:12px;}table{width:100%;border-collapse:collapse;}th{text-align:left;padding:8px 10px;background:#f7f5f0;border-bottom:2px solid #e8e3da;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#7a7166;}td{padding:8px 10px;border-bottom:1px solid #e8e3da;vertical-align:middle;}.pass{background:#ebf5f0;color:#2d6a4f;padding:2px 8px;border-radius:20px;font-weight:700;font-size:11px;display:inline-block;}.fail{background:#faf0eb;color:#b5451b;padding:2px 8px;border-radius:20px;font-weight:700;font-size:11px;display:inline-block;}button{display:none;}@media print{body{padding:16px;}}</style></head><body><h1>'+prog+' — Grade Report</h1><div class="sub">Printed on '+date+' · ExamPortal</div>'+content.innerHTML.replace(/class="grade-badge grade-pass"/g,'class="pass"').replace(/class="grade-badge grade-fail"/g,'class="fail"')+'<script>window.onload=()=>setTimeout(()=>window.print(),300);<\/script></body></html>');
-  win.document.close();
+
+  // Compute date range from exam schedules
+  const progExams=db.exams.filter(e=>!e.isRetakeExam&&!e.is_trashed&&(e.program===prog||e.program==='EKG'||e.program==='Phlebotomy'||e.program==='Medical Assistant'));
+  const openDates=progExams.map(e=>e.openAt).filter(Boolean).sort();
+  const closeDates=progExams.map(e=>e.closeAt).filter(Boolean).sort();
+  const autoStart=openDates.length?openDates[0].slice(0,10):'';
+  const autoEnd=closeDates.length?closeDates[closeDates.length-1].slice(0,10):'';
+
+  // Show date picker dialog
+  const dialog=document.createElement('div');
+  dialog.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2000;display:flex;align-items:center;justify-content:center;';
+  dialog.innerHTML=`
+    <div style="background:var(--surface);border-radius:16px;padding:28px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2);">
+      <h3 style="font-size:18px;margin-bottom:6px;">🖨 Print Grade Report</h3>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:18px;">Set the date range for this report. Dates are auto-detected from exam schedules but can be changed.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;">
+        <div>
+          <label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;">Start Date</label>
+          <input type="date" id="print-date-start" value="${autoStart}" style="width:100%;margin-top:4px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);"/>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;">End Date</label>
+          <input type="date" id="print-date-end" value="${autoEnd}" style="width:100%;margin-top:4px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="print-cancel-btn" class="btn btn-outline">Cancel</button>
+        <button id="print-go-btn" class="btn btn-primary">Print</button>
+      </div>
+    </div>`;
+  document.body.appendChild(dialog);
+
+  dialog.querySelector('#print-cancel-btn').onclick=()=>document.body.removeChild(dialog);
+  dialog.querySelector('#print-go-btn').onclick=()=>{
+    const startDate=document.getElementById('print-date-start').value;
+    const endDate=document.getElementById('print-date-end').value;
+    document.body.removeChild(dialog);
+
+    const fmt=(d)=>d?new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}):'';
+    const dateRange=startDate||endDate
+      ?`${fmt(startDate)}${startDate&&endDate?' — ':''}${fmt(endDate)}`
+      :new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+    const printDate=new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+
+    const win=window.open('','_blank');
+    win.document.write('<!DOCTYPE html><html><head><title>'+prog+' — Grade Report</title><style>*{box-sizing:border-box;}body{font-family:"Segoe UI",sans-serif;padding:32px;color:#1a1714;font-size:13px;}h1{font-size:22px;margin-bottom:4px;}.sub{color:#7a7166;margin-bottom:24px;font-size:12px;}table{width:100%;border-collapse:collapse;}th{text-align:left;padding:8px 10px;background:#f7f5f0;border-bottom:2px solid #e8e3da;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#7a7166;}td{padding:8px 10px;border-bottom:1px solid #e8e3da;vertical-align:middle;}.pass{background:#ebf5f0;color:#2d6a4f;padding:2px 8px;border-radius:20px;font-weight:700;font-size:11px;display:inline-block;}.fail{background:#faf0eb;color:#b5451b;padding:2px 8px;border-radius:20px;font-weight:700;font-size:11px;display:inline-block;}button{display:none;}.no-print{display:none;}@media print{body{padding:16px;}}</style></head><body>'
+      +'<h1>'+prog+' — Grade Report</h1>'
+      +'<div class="sub">Period: <strong>'+dateRange+'</strong> · Printed on '+printDate+' · ExamPortal</div>'
+      +content.innerHTML.replace(/class="grade-badge grade-pass"/g,'class="pass"').replace(/class="grade-badge grade-fail"/g,'class="fail"')
+      +'<script>window.onload=()=>setTimeout(()=>window.print(),300);<\/script></body></html>');
+    win.document.close();
+  };
 }
 
 function showDashDetail(htmlContent){
