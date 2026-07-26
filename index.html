@@ -1042,6 +1042,10 @@ function studentBelongsToProgram(studentProgram, dashboardProgram){
 }
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
+  // Check scheduled dates
+  const now=new Date();
+  if(exam.openAt && new Date(exam.openAt)>now) return false; // not open yet
+  if(exam.closeAt && new Date(exam.closeAt)<now) return false; // past close date (but mid-exam submissions still accepted)
   if(!exam.program || exam.program==='') return true; // general
   const ep = exam.program;
   const isComboStudent = studentProg==='Medical Assistant + Phlebotomy + EKG';
@@ -1197,6 +1201,8 @@ async function syncExam(exam){
       id:exam.id, title:exam.title, program:exam.program||'',
       exam_type:exam.examType||'exam',
       allow_review:exam.allowReview||false,
+      open_at:exam.openAt||null,
+      close_at:exam.closeAt||null,
       open_morning:exam.openMorning||false,
       open_evening:exam.openEvening||false,
       teacher_email:exam.teacherEmail||'', open:exam.open,
@@ -1261,6 +1267,8 @@ async function loadFromSupabase(){
       id:e.id, title:e.title, program:e.program||'',
       examType:e.exam_type||'exam',
       allowReview:e.allow_review||false,
+      openAt:e.open_at||null,
+      closeAt:e.close_at||null,
       openMorning:e.open_morning||false,
       openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
@@ -1644,8 +1652,16 @@ function renderProgExams(el,prog,exams){
     el.innerHTML='<div class="empty"><div class="empty-icon">📋</div>No exams for this program yet.<br><button class="btn btn-primary" style="margin-top:12px;" onclick="openNewExamModal()">+ Create Exam</button></div>';
     return;
   }
-  const sortedExams=[...exams].sort((a,b)=>a.title.localeCompare(b.title));
-  el.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${sortedExams.map(e=>{
+  const sortedExams=[...exams].sort((a,b)=>{
+    const na=extractExamNumber(a.title), nb=extractExamNumber(b.title);
+    if(na!==nb) return na-nb;
+    return a.title.localeCompare(b.title);
+  });
+  el.innerHTML=`
+    <div style="margin-bottom:16px;">
+      <input type="text" id="exam-search" placeholder="🔍 Search exams..." style="width:100%;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);color:var(--text);" oninput="filterExamCards()"/>
+    </div>
+    <div id="exam-card-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${sortedExams.map(e=>{
     const eSubs=db.submissions.filter(s=>s.examId===e.id);
     const passCount=eSubs.filter(s=>s.percentage>=80).length;
     return `<div style="background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:18px;transition:all .15s;" data-eid="${e.id}">
@@ -1659,7 +1675,8 @@ function renderProgExams(el,prog,exams){
           : `<span class="status-pill ${e.open?'open':'closed'}" style="margin-left:8px;flex-shrink:0;"><span class="status-dot"></span>${e.open?'Open':'Closed'}</span>`
         }
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
+      ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-bottom:4px;">⏰ Closes ${new Date(e.closeAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>`:''}
       ${eSubs.length?`<div style="font-size:11px;margin-bottom:8px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
       <div style="margin-bottom:8px;" onclick="event.stopPropagation()">
         <select data-action="set-type" data-eid="${e.id}" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);width:100%;">
@@ -1668,6 +1685,16 @@ function renderProgExams(el,prog,exams){
           <option value="final" ${e.examType==='final'?'selected':''}>🎓 Final Exam</option>
           <option value="workbook" ${e.examType==='workbook'?'selected':''}>📚 Workbook</option>
         </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;font-size:10px;" onclick="event.stopPropagation()">
+        <div>
+          <div style="color:var(--muted);margin-bottom:2px;">📅 Open from</div>
+          <input type="datetime-local" data-action="set-open-date" data-eid="${e.id}" value="${e.openAt?e.openAt.slice(0,16):''}" style="width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:10px;background:var(--bg);"/>
+        </div>
+        <div>
+          <div style="color:var(--muted);margin-bottom:2px;">📅 Close on</div>
+          <input type="datetime-local" data-action="set-close-date" data-eid="${e.id}" value="${e.closeAt?e.closeAt.slice(0,16):''}" style="width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:10px;background:var(--bg);"/>
+        </div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
         ${(e.program==='Nurse Aide'||e.program==='Medication Aide')
@@ -1730,6 +1757,14 @@ function renderProgExams(el,prog,exams){
   });
 }
 
+function filterExamCards(){
+  const q=(document.getElementById('exam-search')?.value||'').toLowerCase();
+  document.querySelectorAll('#exam-card-grid>[data-eid]').forEach(card=>{
+    const title=card.querySelector('[style*="font-weight:600"]')?.textContent||'';
+    card.style.display=title.toLowerCase().includes(q)?'':'none';
+  });
+}
+
 function openRenameExamModal(eid){
   const exam=db.exams.find(e=>e.id===eid);
   if(!exam) return;
@@ -1753,7 +1788,7 @@ function renderProgSubs(el,prog,subs){
   function buildTable(filteredSubs){
     return `<table class="sub-table" style="width:100%;">
       <thead><tr><th>Student</th><th>Email</th><th>Exam</th><th>Score</th><th>Grade</th><th>Date</th><th>Attempts</th><th></th></tr></thead>
-      <tbody>${filteredSubs.sort((a,b)=>a.studentName.localeCompare(b.studentName)).map(s=>{
+      <tbody id="subs-table-body">${filteredSubs.sort((a,b)=>a.studentName.localeCompare(b.studentName)).map(s=>{
         const exam=examMap[s.examId];
         const rec=exam&&exam.studentAttempts&&exam.studentAttempts[s.studentEmail]?exam.studentAttempts[s.studentEmail]:null;
         const attUsed=rec?rec.count:(s.attemptsUsed||1);
@@ -1780,7 +1815,7 @@ function renderProgSubs(el,prog,subs){
   }
 
   function render(filterSubs){
-    el.innerHTML=(hasShifts?`
+    el.innerHTML=`<div style="margin-bottom:12px;"><input type="text" placeholder="🔍 Search by name, email, exam..." style="width:100%;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);color:var(--text);" oninput="filterSubs(this.value)"/></div>`+(hasShifts?`
       <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
         <button class="btn ${!currentShift?'btn-primary':'btn-outline'} btn-sm" data-shift="">All</button>
         ${shifts.map(sh=>`<button class="btn ${currentShift===sh?'btn-primary':'btn-outline'} btn-sm" data-shift="${sh}">${sh.split(' ').pop()}</button>`).join('')}
@@ -1963,12 +1998,31 @@ function renderProgGrades(el,prog,subs){
   // ── Program view ──
   function renderProgramView(students){
     // Build columns: exam cols + manual label cols
-    const examCols=progExams.map(e=>({id:'ex_'+e.id,title:e.title,examId:e.id,
+    // Sort by number first, then subject order for combo, then alphabetically
+    let sortedProgExams;
+    if(prog===COMBO_PROGRAM){
+      sortedProgExams=[...progExams].sort((a,b)=>{
+        const na=extractExamNumber(a.title), nb=extractExamNumber(b.title);
+        if(na!==nb) return na-nb;
+        const sa=COMBO_SUBJECT_ORDER.indexOf(getExamSubject(a));
+        const sb=COMBO_SUBJECT_ORDER.indexOf(getExamSubject(b));
+        if(sa!==sb) return sa-sb;
+        return a.title.localeCompare(b.title);
+      });
+    } else {
+      sortedProgExams=[...progExams].sort((a,b)=>{
+        const na=extractExamNumber(a.title), nb=extractExamNumber(b.title);
+        if(na!==nb) return na-nb;
+        return a.title.localeCompare(b.title);
+      });
+    }
+    const examCols=sortedProgExams.map(e=>({id:'ex_'+e.id,title:e.title,examId:e.id,
       icon:{exam:'📝',review:'🔍',final:'🎓',workbook:'📚',skills:'🏋'}[e.examType||'exam']||'📝'}));
     const manualCols=manualLabels.map(m=>({id:'ml_'+m.uid,uid:m.uid,category:m.category,label:m.label,icon:m.icon}));
     const allCols=[...examCols,...manualCols];
 
-    const examHeaders=examCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.title}">${c.icon} ${c.title.length>14?c.title.slice(0,12)+'…':c.title}</th>`).join('');
+    // Full exam name headers — no truncation
+    const examHeaders=examCols.map(c=>`<th style="text-align:center;min-width:120px;font-size:11px;white-space:normal;max-width:150px;word-break:break-word;padding:6px 8px;">${c.icon} ${c.title}</th>`).join('');
     const manualHeaders=manualCols.map(c=>`<th style="text-align:center;min-width:80px;font-size:11px;white-space:nowrap;" title="${c.label}">
       ${c.icon} ${c.label.length>14?c.label.slice(0,12)+'…':c.label}
       <button style="display:block;margin:2px auto 0;background:none;border:none;color:var(--muted);cursor:pointer;font-size:9px;" onclick="deleteManualLabelCol('${c.category}','${c.label}','${prog}')">✕ del col</button>
@@ -2001,12 +2055,12 @@ function renderProgGrades(el,prog,subs){
       }).join('');
 
       return `<tr>
-        <td>
+        <td style="position:sticky;left:0;background:var(--surface);z-index:1;min-width:160px;border-right:1px solid var(--border);">
           <button class="btn btn-ghost btn-sm" style="text-align:left;font-weight:500;padding:2px 6px;" data-email="${st.email}">${st.name}</button>
           <div style="font-size:11px;color:var(--muted);">${st.program}</div>
         </td>
         ${examCells}${manualCells}
-        <td style="text-align:center;">${final!==null?`<span class="grade-badge ${final>=80?'grade-pass':'grade-fail'}">${final}%</span>`:'—'}</td>
+        <td style="text-align:center;position:sticky;right:0;background:var(--surface);z-index:1;border-left:1px solid var(--border);">${final!==null?`<span class="grade-badge ${final>=80?'grade-pass':'grade-fail'}">${final}%</span>`:'—'}</td>
       </tr>`;
     }).join('');
 
@@ -2017,15 +2071,21 @@ function renderProgGrades(el,prog,subs){
     el.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;gap:8px;flex-wrap:wrap;">${shiftBtns}</div>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="text" id="grade-search" placeholder="🔍 Search student..." style="padding:6px 12px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;background:var(--bg);color:var(--text);width:160px;" oninput="filterGradeRows(this.value)"/>
           <button class="btn btn-outline btn-sm" onclick="openGradeWeightsModal('${prog}')">⚙ Weights</button>
           <button class="btn btn-primary btn-sm" onclick="openAddManualGradeModal('${prog}')">+ Add Grade</button>
           <button class="btn btn-outline btn-sm" onclick="printGradesForProg('${prog}')">🖨 Print</button>
         </div>
       </div>
-      <div id="prog-grades-printable" style="overflow-x:auto;">
-        <table class="sub-table" style="width:100%;min-width:400px;">
-          <thead><tr><th>Student</th>${examHeaders}${manualHeaders}<th style="text-align:center;">Final</th></tr></thead>
+      <div id="prog-grades-printable" style="overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 260px);">
+        <table class="sub-table" style="width:100%;min-width:400px;border-collapse:separate;border-spacing:0;">
+          <thead style="position:sticky;top:0;z-index:3;background:var(--surface);">
+          <tr>
+          <th style="position:sticky;left:0;z-index:4;background:var(--surface);min-width:160px;">Student</th>
+          ${examHeaders}${manualHeaders}
+          <th style="text-align:center;position:sticky;right:0;z-index:3;background:var(--surface);">Final</th>
+          </tr></thead>
           <tbody>${rows||'<tr><td colspan="99" style="text-align:center;color:var(--muted);padding:20px;">No students yet.</td></tr>'}</tbody>
         </table>
       </div>
@@ -2291,6 +2351,37 @@ function inlineEditGrade(spanEl,email,examId,currentPct,type){
   };
   document.getElementById('inline-cancel-btn').onclick=()=>renderProgTab();
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('inline-save-btn').click(); if(e.key==='Escape') renderProgTab(); });
+}
+
+// Format datetime for display
+function fmtDateTime(isoStr){
+  if(!isoStr) return '';
+  return new Date(isoStr).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+}
+
+// Extract number from exam title for sorting (e.g. "EKG Exam 1" → 1)
+function extractExamNumber(title){
+  const m = title.match(/\d+/);
+  return m ? parseInt(m[0]) : 999;
+}
+
+// Subject order for combo program
+const COMBO_SUBJECT_ORDER = ['Medical Assistant','Phlebotomy','EKG'];
+
+function getExamSubject(exam){
+  const p = exam.program||'';
+  if(p==='Medical Assistant'||p.includes('Medical Assistant')) return 'Medical Assistant';
+  if(p==='Phlebotomy') return 'Phlebotomy';
+  if(p==='EKG') return 'EKG';
+  return 'Other';
+}
+
+function filterGradeRows(q){
+  const rows=document.querySelectorAll('#prog-grades-printable tbody tr');
+  rows.forEach(row=>{
+    const text=row.textContent.toLowerCase();
+    row.style.display=text.includes(q.toLowerCase())?'':'none';
+  });
 }
 
 function renderProgWeightSettings(el,prog){
@@ -3655,10 +3746,20 @@ async function syncFromSupabase(){
 
     if(!exams) return; // Don't wipe local data if fetch failed
 
+    // Auto-open/close exams based on scheduled dates
+    const now=new Date();
+    let scheduleChanged=false;
+    (exams||[]).forEach(e=>{
+      if(e.open_at && new Date(e.open_at)<=now && !e.open){ e.open=true; scheduleChanged=true; }
+      if(e.close_at && new Date(e.close_at)<now && e.open){ e.open=false; scheduleChanged=true; }
+    });
+
     const remoteExams=(exams||[]).map(e=>({
       id:e.id, title:e.title, program:e.program||'',
       examType:e.exam_type||'exam',
       allowReview:e.allow_review||false,
+      openAt:e.open_at||null,
+      closeAt:e.close_at||null,
       openMorning:e.open_morning||false,
       openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
@@ -4154,6 +4255,7 @@ function _renderExamList(name, email, program){
       <div>
         <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:2px;">${e.questions.length} questions · ${attLeft} attempt${attLeft!==1?'s':''} available</div>
+        ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ Closes ${fmtDateTime(e.closeAt)}</div>`:''}
       </div>
       <button class="btn btn-primary btn-sm" data-eid="${e.id}">Take Exam →</button>
     </div>`;
@@ -4226,6 +4328,7 @@ function switchStudentTab(tab){
         <div>
           <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px;">${e.questions.length} questions · ${attLeft} attempt${attLeft!==1?'s':''} available</div>
+          ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ Closes ${fmtDateTime(e.closeAt)}</div>`:''}
         </div>
         <button class="btn btn-primary btn-sm" data-eid="${e.id}">Take Exam →</button>
       </div>`;
