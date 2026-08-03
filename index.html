@@ -1679,7 +1679,7 @@ function renderProgExams(el,prog,exams){
         }
       </div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">${e.questions.length} questions · ${eSubs.length} submission${eSubs.length!==1?'s':''}</div>
-      ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-bottom:4px;">⏰ Closes ${new Date(e.closeAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div>`:''}
+      ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-bottom:4px;">⏰ Closes ${fmtDateTime(e.closeAt)}</div>`:''}
       ${eSubs.length?`<div style="font-size:11px;margin-bottom:8px;color:${passCount/eSubs.length>=.8?'var(--green)':'var(--accent)'};">${passCount}/${eSubs.length} passed</div>`:''}
       <div style="margin-bottom:8px;" onclick="event.stopPropagation()">
         <select data-action="set-type" data-eid="${e.id}" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);width:100%;">
@@ -1763,12 +1763,12 @@ function renderProgExams(el,prog,exams){
           // Only re-render for type change (affects icon display)
           renderProgTab();
         } else if(action==='set-open-date'){
-          exam.openAt=btn.value?new Date(btn.value).toISOString():null;
+          exam.openAt=btn.value||null; // Store as local datetime string
           if(exam.openAt && new Date(exam.openAt)<=new Date()){ exam.open=true; }
           saveDB(); syncExam(exam).catch(()=>{}); // No re-render — just save silently
           toast('✓ Open schedule saved');
         } else if(action==='set-close-date'){
-          exam.closeAt=btn.value?new Date(btn.value).toISOString():null;
+          exam.closeAt=btn.value||null; // Store as local datetime string
           if(exam.closeAt && new Date(exam.closeAt)<new Date()){ exam.open=false; }
           saveDB(); syncExam(exam).catch(()=>{}); // No re-render — just save silently
           toast('✓ Close schedule saved');
@@ -2406,7 +2406,12 @@ function inlineEditGrade(spanEl,email,examId,currentPct,type){
 // Format datetime for display
 function fmtDateTime(isoStr){
   if(!isoStr) return '';
-  return new Date(isoStr).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  // Parse as local time — datetime-local values are local, not UTC
+  // If already in YYYY-MM-DDTHH:MM format (no Z), treat as local
+  const d = isoStr.endsWith('Z') || isoStr.includes('+')
+    ? new Date(isoStr)          // already has timezone info
+    : new Date(isoStr.replace('T',' ')); // local string — parse as local
+  return d.toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
 }
 
 // Extract number from exam title for sorting (e.g. "EKG Exam 1" → 1)
@@ -4400,10 +4405,10 @@ async function saveExamScheduleDate(examId, type, value){
   const exam=db.exams.find(e=>e.id===examId);
   if(!exam) return;
   if(type==='open'){
-    exam.openAt=value?new Date(value).toISOString():null;
+    exam.openAt=value||null; // Store as local datetime string
     if(exam.openAt && new Date(exam.openAt)<=new Date()) exam.open=true;
   } else {
-    exam.closeAt=value?new Date(value).toISOString():null;
+    exam.closeAt=value||null; // Store as local datetime string
     if(exam.closeAt && new Date(exam.closeAt)<new Date()) exam.open=false;
   }
   saveDB();
