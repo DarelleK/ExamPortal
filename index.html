@@ -395,7 +395,7 @@ textarea{resize:vertical;}
 </div>
 <!-- ═══ STUDENT PORTAL — New or Returning ═══ -->
 <div id="screen-student-portal" class="screen" style="align-items:center;justify-content:center;padding:40px 20px;">
-  <div style="max-width:460px;width:100%;">
+  <div style="max-width:480px;width:100%;">
     <div style="text-align:center;margin-bottom:28px;">
       <div style="font-size:40px;margin-bottom:10px;">🎓</div>
       <h2 style="font-size:28px;margin-bottom:6px;">Student Portal</h2>
@@ -419,31 +419,32 @@ textarea{resize:vertical;}
       <div class="field"><label>Full Name</label><input id="sp-name" type="text" placeholder="Jane Doe"/></div>
       <div class="field"><label>Email Address</label><input id="sp-email" type="email" placeholder="jane@school.edu"/></div>
 
-      <!-- Multi-program selection -->
+      <!-- Step 1: Program selection (no shifts here) -->
       <div class="field">
-        <label>Program(s)</label>
-        <div style="display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;">
-          <!-- Single programs -->
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px;">Single Programs</div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Nurse Aide Morning" id="spr-nam"/> Nurse Aide Morning</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Nurse Aide Evening" id="spr-nae"/> Nurse Aide Evening</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Medication Aide Morning" id="spr-mam"/> Medication Aide Morning</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Medication Aide Evening" id="spr-mae"/> Medication Aide Evening</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="Phlebotomy" id="spr-ph"/> Phlebotomy</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="radio" name="sp-prog-single" value="EKG" id="spr-ek"/> EKG</label>
-          <!-- Multi programs -->
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-top:8px;margin-bottom:4px;">Allied Health Combo</div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="spc-combo" value="Medical Assistant + Phlebotomy + EKG" onchange="handleMultiProg()"/> Medical Assistant + Phlebotomy + EKG</label>
+        <label>Program</label>
+        <div style="display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;" id="sp-prog-list">
+          <div id="sp-prog-loading" style="font-size:13px;color:var(--muted);">Loading programs...</div>
         </div>
-        <div id="sp-prog-display" style="font-size:12px;color:var(--accent2);margin-top:6px;"></div>
       </div>
+      <input type="hidden" id="sp-program-base"/>
+
+      <!-- Shift determined by cohort term, no radio needed -->
+
+      <!-- Step 3: Term/Cohort -->
+      <div id="sp-term-section" class="field" style="display:none;">
+        <label>Cohort / Term</label>
+        <select id="sp-term" onchange="document.getElementById('sp-term-id').value=this.value">
+          <option value="">— Select your cohort —</option>
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Select the class session you are enrolled in.</div>
+      </div>
+      <input type="hidden" id="sp-term-id"/>
       <input type="hidden" id="sp-program"/>
 
-      <!-- Integrity quiz -->
+      <!-- Step 4: Integrity quiz -->
       <div style="background:var(--bg);border:1.5px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;">
         <div style="font-size:13px;font-weight:700;margin-bottom:12px;">📋 Academic Integrity Quiz</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Please answer honestly. This confirms you understand our academic policies.</div>
-
         <div style="margin-bottom:16px;">
           <div style="font-size:13px;font-weight:500;margin-bottom:8px;">1. Is it acceptable to share exam questions or answers with other students?</div>
           <div style="display:flex;flex-direction:column;gap:6px;">
@@ -460,7 +461,6 @@ textarea{resize:vertical;}
         </div>
         <div id="iq-error" style="font-size:12px;color:var(--accent);margin-top:10px;"></div>
       </div>
-
       <button class="btn btn-primary" style="width:100%;" onclick="showStudentConfirm()">Continue →</button>
     </div>
 
@@ -468,23 +468,22 @@ textarea{resize:vertical;}
     <div id="sp-ret-form" style="display:none;">
       <div class="field"><label>Full Name</label><input id="sp-ret-name" type="text" placeholder="Jane Doe"/></div>
       <div class="field"><label>Email Address</label><input id="sp-ret-email" type="email" placeholder="jane@school.edu"/></div>
-      <div class="field"><label>Program</label>
-        <select id="sp-ret-program" onchange="populateTermSelect(this.value,'sp-ret-term','sp-ret-term-section','sp-ret-term-id')">
-          <option value="">— Select your program —</option>
-          <option>Nurse Aide Morning</option>
-          <option>Nurse Aide Evening</option>
-          <option>Medication Aide Morning</option>
-          <option>Medication Aide Evening</option>
-          <option>Phlebotomy</option>
-          <option>EKG</option>
-          <option>Medical Assistant + Phlebotomy + EKG</option>
+      <div class="field">
+        <label>Program</label>
+        <div style="display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;" id="sp-ret-prog-list">
+          <div style="font-size:13px;color:var(--muted);">Loading programs...</div>
+        </div>
+      </div>
+      <input type="hidden" id="sp-ret-program-base"/>
+      <!-- Shift determined by cohort term -->
+      <div id="sp-ret-term-section" class="field" style="display:none;">
+        <label>Cohort / Term</label>
+        <select id="sp-ret-term" onchange="document.getElementById('sp-ret-term-id').value=this.value">
+          <option value="">— Select your cohort —</option>
         </select>
       </div>
-      <div class="field" id="sp-ret-term-section" style="display:none;">
-        <label>Term / Class</label>
-        <select id="sp-ret-term"><option value="">— Select your term —</option></select>
-      </div>
       <input type="hidden" id="sp-ret-term-id"/>
+      <input type="hidden" id="sp-ret-program"/>
       <button class="btn btn-primary" style="width:100%;" onclick="showStudentConfirmReturning()">Continue →</button>
     </div>
 
@@ -1037,8 +1036,7 @@ function studentToTeacher(sp){
 const COMBO_PROGRAM = 'Medical Assistant + Phlebotomy + EKG';
 function examBelongsToProgram(examProgram, dashboardProgram){
   const ep = examProgram || '';
-  // Exams with no program assigned are shown everywhere so they don't get lost
-  if(!ep) return true;
+  if(!ep) return false; // No program = don't show anywhere (teacher must assign)
   if(dashboardProgram===COMBO_PROGRAM){
     return ep===COMBO_PROGRAM || ep==='Medical Assistant' || ep==='EKG' || ep==='Phlebotomy';
   }
@@ -1054,36 +1052,39 @@ function studentBelongsToProgram(studentProgram, dashboardProgram){
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   const termId=ss._portalTermId;
-  if(termId){ const term=db_terms.find(t=>t.id===termId); if(term&&term.isClosed) return false; }
+  const term=termId?db_terms.find(t=>t.id===termId):null;
+
+  // Closed term = no exams
+  if(term&&term.isClosed) return false;
+
   // Check scheduled dates
   const now=new Date();
-  if(exam.openAt && new Date(exam.openAt)>now) return false; // not open yet
-  if(exam.closeAt && new Date(exam.closeAt)<now) return false; // past close date (but mid-exam submissions still accepted)
-  if(!exam.program || exam.program==='') return true; // general
-  const ep = exam.program;
-  const isComboStudent = studentProg==='Medical Assistant + Phlebotomy + EKG';
-  const isShiftProg = ep==='Nurse Aide' || ep==='Medication Aide';
+  if(exam.openAt && new Date(exam.openAt)>now) return false;
+  if(exam.closeAt && new Date(exam.closeAt)<now) return false;
 
-  // For shift programs, check that the specific shift is open
-  if(isShiftProg){
-    const isMorning = studentProg.includes('Morning');
-    const isEvening = studentProg.includes('Evening');
-    const baseMatch = ep===studentToTeacher(studentProg);
-    if(!baseMatch) return false;
-    // If neither shift toggle is set, fall back to main open flag
-    if(!exam.openMorning && !exam.openEvening) return exam.open;
-    if(isMorning) return !!exam.openMorning;
-    if(isEvening) return !!exam.openEvening;
-    return exam.open;
-  }
+  // Exam must be open
+  if(!exam.open) return false;
 
-  // Exact match
-  if(ep===studentProg) return true;
-  // Base match (strips Morning/Evening)
-  if(ep===studentToTeacher(studentProg)) return true;
-  // Combo students see EKG, Phlebotomy, and Medical Assistant exams
-  if(isComboStudent && (ep==='EKG'||ep==='Phlebotomy'||ep==='Medical Assistant + Phlebotomy + EKG')) return true;
-  return false;
+  if(!exam.program || exam.program==='') return false; // unassigned exam hidden
+
+  const ep=exam.program;
+  const isComboStudent=studentProg==='Medical Assistant + Phlebotomy + EKG';
+
+  // Program must match
+  const progMatches = ep===studentProg ||
+    (isComboStudent && (ep==='EKG'||ep==='Phlebotomy'||ep==='Medical Assistant + Phlebotomy + EKG')) ||
+    ep===studentProg;
+  if(!progMatches) return false;
+
+  // Shift check — based on student's TERM shift, not program name
+  const termShift=term?term.shift||'None':'None';
+  const hasShiftToggles=exam.openMorning||exam.openEvening;
+
+  if(!hasShiftToggles) return true; // no shift restriction on this exam
+  if(termShift==='None'||termShift==='Both') return exam.openMorning||exam.openEvening;
+  if(termShift==='Morning') return !!exam.openMorning;
+  if(termShift==='Evening') return !!exam.openEvening;
+  return true;
 }
 
 // ── QB Supabase config (read-only access to Quiz Builder banks) ──
@@ -1308,8 +1309,27 @@ async function loadFromSupabase(){
 
     db_students = (students||[]).map(s=>({
       email:s.email,name:s.name,programs:s.programs||'',
+      termId:s.term_id||'',
       registeredAt:s.registered_at,integrityPassed:s.integrity_passed
     }));
+
+    // Load programs
+    try{
+      const progRows=await sbFetch('ep_programs?order=created_at.asc');
+      db_programs=(progRows||[]).map(p=>({id:p.id,name:p.name,hasShifts:p.has_shifts||false,createdAt:p.created_at}));
+    }catch(e){ db_programs=[]; }
+
+    // Load terms (with shift)
+    try{
+      const termRows=await sbFetch('ep_terms?order=created_at.asc');
+      db_terms=(termRows||[]).map(t=>({
+        id:t.id,programId:t.program_id,name:t.name,
+        shift:t.shift||'None',
+        startDate:t.start_date||'',endDate:t.end_date||'',
+        isClosed:t.is_closed||false,examSnapshot:t.exam_snapshot||[],
+        gradeWeights:t.grade_weights||{},createdAt:t.created_at
+      }));
+    }catch(e){ db_terms=[]; }
 
     if(settings && settings.length>0){
       const s=settings[0];
@@ -2604,14 +2624,14 @@ function openAddStudentToTermModal(){
   const term=db_terms.find(t=>t.id===currentTermId);
   if(!term) return;
 
-  // Get all students from this program who are NOT already in this term
+  // Get students already in THIS term
   const enrolled=new Set(db_students.filter(s=>s.termId===currentTermId).map(s=>s.email));
 
-  // Students from legacy (no term) or other terms in this program
+  // Only show students NOT in this term (can be from legacy or other terms)
   const candidates=db_students.filter(s=>{
     if(enrolled.has(s.email)) return false;
     const base=studentToTeacher(s.programs||'');
-    return base===currentProgram;
+    return base===currentProgram||s.programs===currentProgram;
   });
 
   // Also get unique students from legacy submissions for this program
@@ -2750,8 +2770,14 @@ async function removeStudentFromTerm(email){
 }
 
 function renderTermGrades(el){
-  const subs=db.submissions.filter(s=>s.termId===currentTermId);
+  // Only submissions for students enrolled in this term
+  const enrolledEmails=new Set(db_students.filter(s=>s.termId===currentTermId).map(s=>s.email.toLowerCase()));
+  const subs=db.submissions.filter(s=>s.termId===currentTermId||
+    (enrolledEmails.has(s.studentEmail.toLowerCase())&&!s.termId));
+  // Override studentMap to only show enrolled students
+  window._termStudentFilter=enrolledEmails;
   renderProgGrades(el, currentProgram, subs);
+  window._termStudentFilter=null;
 }
 
 function renderTermWeights(el){
@@ -2789,13 +2815,59 @@ function openAddProgramModal(){
 
 // ── Add Term Modal ──
 function openAddTermModal(progId,progName){
-  const name=prompt('Enter term name (e.g. "Nurse Aide Morning June 2026"):');
-  if(!name||!name.trim()) return;
-  const startDate=prompt('Start date (YYYY-MM-DD or leave blank):')||'';
-  const endDate=prompt('End date (YYYY-MM-DD or leave blank):')||'';
-  const term={id:'term-'+Date.now(),programId:progId,name:name.trim(),startDate,endDate,isClosed:false,examSnapshot:[],gradeWeights:{},createdAt:new Date().toISOString()};
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  overlay.innerHTML=`
+    <div style="background:var(--surface);border-radius:16px;padding:28px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2);">
+      <h3 style="font-size:18px;margin-bottom:18px;">📅 New Term — ${progName}</h3>
+      <div class="field" style="margin-bottom:14px;">
+        <label style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);">Term Name</label>
+        <input id="new-term-name" type="text" placeholder='e.g. "Nurse Aide Morning June 2026"'
+          style="width:100%;margin-top:4px;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);"/>
+      </div>
+      <div class="field" style="margin-bottom:14px;">
+        <label style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);">Shift</label>
+        <select id="new-term-shift" style="width:100%;margin-top:4px;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);">
+          <option value="None">None (no shift — EKG, Phlebotomy...)</option>
+          <option value="Morning">Morning</option>
+          <option value="Evening">Evening</option>
+          <option value="Both">Both (Morning & Evening)</option>
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);">Start Date</label>
+          <input id="new-term-start" type="date" style="width:100%;margin-top:4px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);"/>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);">End Date</label>
+          <input id="new-term-end" type="date" style="width:100%;margin-top:4px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button onclick="this.closest('[style*=fixed]').remove()" class="btn btn-outline">Cancel</button>
+        <button onclick="confirmCreateTerm('${progId}')" class="btn btn-primary">Create Term</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function confirmCreateTerm(progId){
+  const name=document.getElementById('new-term-name')?.value.trim();
+  const shift=document.getElementById('new-term-shift')?.value||'None';
+  const startDate=document.getElementById('new-term-start')?.value||'';
+  const endDate=document.getElementById('new-term-end')?.value||'';
+  if(!name){ toast('Please enter a term name.'); return; }
+  const overlay=document.querySelector('[style*="position:fixed"][style*="z-index:2000"]');
+  if(overlay) overlay.remove();
+  const term={id:'term-'+Date.now(),programId:progId,name,shift,startDate,endDate,
+    isClosed:false,examSnapshot:[],gradeWeights:{},createdAt:new Date().toISOString()};
   db_terms.push(term);
-  sbFetch('ep_terms',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:{id:term.id,program_id:term.programId,name:term.name,start_date:term.startDate||null,end_date:term.endDate||null,is_closed:false,exam_snapshot:[],grade_weights:{},created_at:term.createdAt}}).catch(()=>{});
+  await sbFetch('ep_terms',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body:{id:term.id,program_id:term.programId,name:term.name,shift:term.shift,
+      start_date:term.startDate||null,end_date:term.endDate||null,
+      is_closed:false,exam_snapshot:[],grade_weights:{},created_at:term.createdAt}
+  }).catch(()=>{});
   toast('✓ Term "'+term.name+'" created.');
   renderProgTab();
 }
@@ -3888,14 +3960,11 @@ function qbGenerateExam(){
   if(!program){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a program.</span>'; return; }
 
   // If 2+ banks selected and balance not yet decided, ask first
-  if(_selectedBanks.length>=2){
-    const balCheck=document.getElementById('qb-balance-chapters');
-    if(!balCheck._balanceDecided){
-      showBalancePopup(()=>{ balCheck._balanceDecided=true; qbGenerateExam(); });
-      return;
-    }
-    balCheck._balanceDecided=false; // reset for next time
+  if(_selectedBanks.length>=2 && !window._qbBalanceDecided){
+    showBalancePopup(()=>{ window._qbBalanceDecided=true; qbGenerateExam(); });
+    return;
   }
+  window._qbBalanceDecided=false; // reset for next generate
 
   const bankVal = document.getElementById('qb-bank-select')?.value;
   // Support both old single-select and new multi-select
@@ -4376,8 +4445,21 @@ async function syncFromSupabase(){
     }));
     db_students=(students||[]).map(s=>({
       email:s.email, name:s.name, programs:s.programs||'',
+      termId:s.term_id||'',
       registeredAt:s.registered_at, integrityPassed:s.integrity_passed
     }));
+
+    // Refresh programs and terms in background
+    try{
+      const pr=await sbFetch('ep_programs?order=created_at.asc');
+      if(pr&&pr.length) db_programs=pr.map(p=>({id:p.id,name:p.name,hasShifts:p.has_shifts||false,createdAt:p.created_at}));
+    }catch(e){}
+    try{
+      const tr=await sbFetch('ep_terms?order=created_at.asc');
+      if(tr) db_terms=tr.map(t=>({id:t.id,programId:t.program_id,name:t.name,shift:t.shift||'None',
+        startDate:t.start_date||'',endDate:t.end_date||'',isClosed:t.is_closed||false,
+        examSnapshot:t.exam_snapshot||[],gradeWeights:t.grade_weights||{},createdAt:t.created_at}));
+    }catch(e){}
 
     // Silently refresh current view
     const sid=(document.querySelector('.screen.active')||{}).id;
@@ -4512,7 +4594,62 @@ function selectStudentType(type){
   if(btnRet){ btnRet.style.borderColor=type==='returning'?'var(--accent)':'var(--border)'; btnRet.style.background=type==='returning'?'var(--accent-light)':'var(--surface)'; }
   const errEl=document.getElementById('sp-error');
   if(errEl){errEl.textContent='';errEl.style.padding='';}
+  // Populate program lists from db_programs
+  populatePortalProgramList('sp-prog-list','sp-program-base',false);
+  populatePortalProgramList('sp-ret-prog-list','sp-ret-program-base',true);
 }
+
+// Build program radio buttons from db_programs (or fallback)
+function populatePortalProgramList(containerId, hiddenId, isReturning){
+  const container=document.getElementById(containerId);
+  if(!container) return;
+  const progs=db_programs.length?db_programs:
+    [{id:'p1',name:'Nurse Aide',hasShifts:true},{id:'p2',name:'Medication Aide',hasShifts:true},
+     {id:'p3',name:'Phlebotomy',hasShifts:false},{id:'p4',name:'EKG',hasShifts:false},
+     {id:'p5',name:'Medical Assistant + Phlebotomy + EKG',hasShifts:false}];
+  const prefix=isReturning?'ret-':'';
+  container.innerHTML=progs.map(p=>`
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;padding:4px 0;">
+      <input type="radio" name="sp-${prefix}prog-radio" value="${p.id}" data-name="${p.name}" data-shifts="${p.hasShifts}"
+        onchange="onPortalProgChange('${prefix}','${p.id}','${p.name}',${p.hasShifts})"/>
+      ${p.name}
+    </label>`).join('');
+}
+
+function onPortalProgChange(prefix,progId,progName,hasShifts){
+  const p=prefix||'';
+  const hidden=document.getElementById('sp-'+p+'program-base');
+  if(hidden) hidden.value=progName;
+  const programHidden=document.getElementById('sp-'+p+'program');
+  if(programHidden) programHidden.value=progName;
+  // Always go straight to term selection — no shift radio
+  populatePortalTerms(p,progId,progName);
+}
+
+// Shift is now determined by term, not by student input
+function updateShiftAndTerm(){ /* deprecated — shift comes from term */ }
+function updateRetShiftAndTerm(){ /* deprecated — shift comes from term */ }
+
+function populatePortalTerms(prefix,progId,fullProgName){
+  const p=prefix||'';
+  const section=document.getElementById('sp-'+p+'term-section');
+  const sel=document.getElementById('sp-'+p+'term');
+  if(!section||!sel) return;
+  const terms=db_terms.filter(t=>t.programId===progId&&!t.isClosed);
+  if(!terms.length){
+    section.style.display='block';
+    sel.innerHTML='<option value="">— No open cohorts available —</option>';
+    return;
+  }
+  sel.innerHTML='<option value="">— Select your cohort —</option>'+
+    terms.map(t=>{
+      const shiftLabel=t.shift&&t.shift!=='None'?' ['+t.shift+']':'';
+      const dateLabel=t.startDate?' ('+new Date(t.startDate).toLocaleDateString()+')':'';
+      return `<option value="${t.id}">${t.name}${shiftLabel}${dateLabel}</option>`;
+    }).join('');
+  section.style.display='block';
+}
+
 
 // Handle multi-program checkbox — deselects single radio if combo chosen
 function handleMultiProg(){
@@ -4565,41 +4702,39 @@ document.addEventListener('DOMContentLoaded',()=>{
 function showStudentConfirm(){
   const name    = (document.getElementById('sp-name')||{value:''}).value.trim();
   const email   = (document.getElementById('sp-email')||{value:''}).value.trim();
-  updateProgDisplay();
-  const program = (document.getElementById('sp-program')||{value:''}).value.trim();
+  const program = document.getElementById('sp-program-base')?.value||
+                  document.getElementById('sp-program')?.value||'';
+  if(document.getElementById('sp-program')) document.getElementById('sp-program').value=program;
+  const termId  = document.getElementById('sp-term-id')?.value||'';
   const errEl   = document.getElementById('sp-error');
   if(errEl){ errEl.textContent=''; errEl.style.padding=''; }
 
   if(!name){ toast('Please enter your name.'); return; }
   if(!email||!email.includes('@')){ toast('Please enter a valid email.'); return; }
-  if(!program){ if(errEl){errEl.style.padding='10px 14px';errEl.textContent='⚠ Please select at least one program.';} return; }
+  if(!program){ if(errEl){errEl.style.padding='10px 14px';errEl.textContent='⚠ Please select a program.';} return; }
+  if(!termId){ if(errEl){errEl.style.padding='10px 14px';errEl.textContent='⚠ Please select your cohort/term.';} return; }
 
-  // Validate integrity quiz
   const iq1=document.querySelector('input[name="iq1"]:checked');
   const iq2=document.querySelector('input[name="iq2"]:checked');
   const iqErr=document.getElementById('iq-error');
   if(!iq1||!iq2){ if(iqErr) iqErr.textContent='⚠ Please answer both integrity questions.'; return; }
   if(iq1.value!=='correct'||iq2.value!=='correct'){
     if(iqErr) iqErr.textContent='⚠ Incorrect answers. Please review the integrity policy and try again.';
-    // Reset wrong answers
     if(iq1.value!=='correct') document.querySelectorAll('input[name="iq1"]').forEach(r=>r.checked=false);
     if(iq2.value!=='correct') document.querySelectorAll('input[name="iq2"]').forEach(r=>r.checked=false);
     return;
   }
   if(iqErr) iqErr.textContent='';
 
-  const termId=(document.getElementById('sp-term-id')||{value:''}).value||'';
   registerStudent(name,email,program,termId);
   ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program; ss._portalTermId=termId;
   studentProgram=program;
-
-  // Clear confirm error if any
   const confirmErr=document.getElementById('confirm-error');
   if(confirmErr){ confirmErr.style.display='none'; confirmErr.textContent=''; }
-
   document.getElementById('confirm-name-display').textContent    = name;
   document.getElementById('confirm-email-display').textContent   = email;
-  document.getElementById('confirm-program-display').textContent = program;
+  const termName=db_terms.find(t=>t.id===termId)?.name||'';
+  document.getElementById('confirm-program-display').textContent = program+(termName?' · '+termName:'');
   showScreen('screen-student-confirm');
 }
 
@@ -4620,29 +4755,62 @@ async function registerStudent(name,email,program,termId){
 
 function showStudentConfirmReturning(){
   const name    = (document.getElementById('sp-ret-name')||{value:''}).value.trim();
-  const email   = (document.getElementById('sp-ret-email')||{value:''}).value.trim();
-  const program = (document.getElementById('sp-ret-program')||{value:''}).value;
+  const email   = (document.getElementById('sp-ret-email')||{value:''}).value.trim().toLowerCase();
+  const program = document.getElementById('sp-ret-program-base')?.value||
+                  document.getElementById('sp-ret-program')?.value||'';
+  if(document.getElementById('sp-ret-program')) document.getElementById('sp-ret-program').value=program;
+  const termId  = document.getElementById('sp-ret-term-id')?.value||
+                  document.getElementById('sp-ret-term')?.value||'';
   const errEl   = document.getElementById('sp-error');
   if(errEl){errEl.textContent='';errEl.style.padding='';}
+
+  function showErr(msg){ if(errEl){errEl.style.padding='10px 14px';errEl.textContent=msg;} }
+
   if(!name){ toast('Please enter your name.'); return; }
   if(!email||!email.includes('@')){ toast('Please enter a valid email.'); return; }
-  if(!program){ toast('Please select your program.'); return; }
+  if(!program){ showErr('⚠ Please select a program.'); return; }
+  if(!termId){ showErr('⚠ Please select your cohort.'); return; }
 
-  // Skip integrity quiz and multi-program validation — go straight to confirm
-  document.getElementById('confirm-name-display').textContent    = name;
-  document.getElementById('confirm-email-display').textContent   = email;
-  document.getElementById('confirm-program-display').textContent = program;
+  // ── Step 1: Verify email exists ──
+  const existing=db_students.find(s=>s.email.toLowerCase()===email);
+  const existingSub=db.submissions.find(s=>s.studentEmail.toLowerCase()===email);
+  if(!existing&&!existingSub){
+    showErr('⚠ No record found for this email. Please register as a new student.');
+    return;
+  }
 
-  // Store in session for exam flow
-  ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program;
+  // ── Step 2: Fuzzy name match (case-insensitive, allows minor typos) ──
+  const storedName=existing?existing.name:(existingSub?existingSub.studentName:'');
+  const nameDist=levenshtein(name.toLowerCase().trim(), storedName.toLowerCase().trim());
+  if(storedName && nameDist>3){
+    showErr('⚠ Name does not match our records. Did you mean "'+storedName+'"?');
+    return;
+  }
+
+  // ── Step 3: Verify cohort enrollment ──
+  const enrolledInTerm = existing && existing.termId===termId;
+  const subInTerm = db.submissions.some(s=>s.studentEmail.toLowerCase()===email && s.termId===termId);
+  if(!enrolledInTerm && !subInTerm){
+    const termName=db_terms.find(t=>t.id===termId)?.name||'this cohort';
+    showErr('⚠ You are not enrolled in "'+termName+'". Please select the correct cohort or register as a new student.');
+    return;
+  }
+
+  // ── All checks passed ──
+  const termName=db_terms.find(t=>t.id===termId)?.name||'';
+  ss._portalName=storedName||name;
+  ss._portalEmail=email;
+  ss._portalProgram=program;
+  ss._portalTermId=termId;
   studentProgram=program;
-
-  // Clear confirm error if any
   const confirmErr=document.getElementById('confirm-error');
   if(confirmErr){ confirmErr.style.display='none'; confirmErr.textContent=''; }
-
+  document.getElementById('confirm-name-display').textContent    = storedName||name;
+  document.getElementById('confirm-email-display').textContent   = email;
+  document.getElementById('confirm-program-display').textContent = program+(termName?' · '+termName:'');
   showScreen('screen-student-confirm');
 }
+
 
 function goStudentPortal(){
   studentProgram = '';
