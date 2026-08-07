@@ -2816,6 +2816,7 @@ function openAddProgramModal(){
 // ── Add Term Modal ──
 function openAddTermModal(progId,progName){
   const overlay=document.createElement('div');
+  overlay.id='new-term-overlay';
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;';
   overlay.innerHTML=`
     <div style="background:var(--surface);border-radius:16px;padding:28px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2);">
@@ -2858,8 +2859,8 @@ async function confirmCreateTerm(progId){
   const startDate=document.getElementById('new-term-start')?.value||'';
   const endDate=document.getElementById('new-term-end')?.value||'';
   if(!name){ toast('Please enter a term name.'); return; }
-  const overlay=document.querySelector('[style*="position:fixed"][style*="z-index:2000"]');
-  if(overlay) overlay.remove();
+  // Close the modal
+  document.getElementById('new-term-overlay')?.remove();
   const term={id:'term-'+Date.now(),programId:progId,name,shift,startDate,endDate,
     isClosed:false,examSnapshot:[],gradeWeights:{},createdAt:new Date().toISOString()};
   db_terms.push(term);
@@ -4040,12 +4041,13 @@ function qbGenerateExam(){
   const exam = {
     id: Date.now().toString(),
     title, program,
+    examType: document.getElementById('qb-exam-type')?.value||'exam',
     teacherEmail: db.settings.defaultTeacherEmail||'',
     open: true,
     questions,
-    createdFrom: bank.name,
+    createdFrom: banksToUse.map(b=>b.name).join(', '),
     createdAt: new Date().toISOString(),
-    isRetakeExam: !!retakeFor  // hidden from main exam list if it is a retake
+    isRetakeExam: !!retakeFor
   };
   db.exams.push(exam);
   saveDB(); syncExam(exam).catch(()=>{});
@@ -4072,7 +4074,7 @@ function qbGenerateExam(){
     document.getElementById('qb-exam-title').value='';
     document.getElementById('qb-num-q').value='20';
   } else {
-    status.innerHTML=`<span style="color:var(--green);">✓ Exam "<strong>${title}</strong>" created with ${questions.length} question${questions.length!==1?'s':''} from "${bank.name}". Now open to students.</span>`;
+    status.innerHTML=`<span style="color:var(--green);">✓ Exam "<strong>${title}</strong>" created with ${questions.length} question${questions.length!==1?'s':''} from "${banksToUse.map(b=>b.name).join(', ')}". Now open to students.</span>`;
     document.getElementById('qb-exam-title').value='';
     document.getElementById('qb-num-q').value='20';
   }
@@ -4449,16 +4451,22 @@ async function syncFromSupabase(){
       registeredAt:s.registered_at, integrityPassed:s.integrity_passed
     }));
 
-    // Refresh programs and terms in background
+    // Refresh programs and terms in background — MERGE don't overwrite
     try{
       const pr=await sbFetch('ep_programs?order=created_at.asc');
       if(pr&&pr.length) db_programs=pr.map(p=>({id:p.id,name:p.name,hasShifts:p.has_shifts||false,createdAt:p.created_at}));
     }catch(e){}
     try{
       const tr=await sbFetch('ep_terms?order=created_at.asc');
-      if(tr) db_terms=tr.map(t=>({id:t.id,programId:t.program_id,name:t.name,shift:t.shift||'None',
-        startDate:t.start_date||'',endDate:t.end_date||'',isClosed:t.is_closed||false,
-        examSnapshot:t.exam_snapshot||[],gradeWeights:t.grade_weights||{},createdAt:t.created_at}));
+      if(tr){
+        const remoteTerm=tr.map(t=>({id:t.id,programId:t.program_id,name:t.name,shift:t.shift||'None',
+          startDate:t.start_date||'',endDate:t.end_date||'',isClosed:t.is_closed||false,
+          examSnapshot:t.exam_snapshot||[],gradeWeights:t.grade_weights||{},createdAt:t.created_at}));
+        // Keep any local-only terms (just created, not yet confirmed in Supabase)
+        const remoteTermIds=new Set(remoteTerm.map(t=>t.id));
+        const localOnlyTerms=db_terms.filter(t=>!remoteTermIds.has(t.id));
+        db_terms=[...remoteTerm,...localOnlyTerms];
+      }
     }catch(e){}
 
     // Silently refresh current view
