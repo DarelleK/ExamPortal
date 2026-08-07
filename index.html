@@ -1665,6 +1665,33 @@ function jsString(value){
   return String(value??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'');
 }
 
+function emailKey(value){
+  return String(value||'').trim().toLowerCase();
+}
+
+function nameKey(value){
+  return String(value||'')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9]+/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function compactNameKey(value){
+  return nameKey(value).replace(/\s+/g,'');
+}
+
+function nameSimilarity(a,b){
+  const ca=compactNameKey(a), cb=compactNameKey(b);
+  if(!ca||!cb) return 0;
+  if(ca===cb) return 1;
+  const maxLen=Math.max(ca.length,cb.length);
+  if(maxLen<5) return 0;
+  return 1-(levenshtein(ca,cb)/maxLen);
+}
+
 function getDuplicateStudentGroups(prog){
   const records=[];
   const add=(email,name,program,source,termId,id)=>{
@@ -1694,17 +1721,32 @@ function getDuplicateStudentGroups(prog){
   };
   records.forEach(r=>{
     pushGroup('email:'+r.email.toLowerCase(),'Same email with conflicting records',r);
-    const n=r.name.toLowerCase().replace(/\s+/g,' ').trim();
+    const n=nameKey(r.name);
     if(n) pushGroup('name:'+n,'Same name with multiple emails',r);
   });
+
+  for(let i=0;i<records.length;i++){
+    for(let j=i+1;j<records.length;j++){
+      const a=records[i], b=records[j];
+      if(!a.name||!b.name) continue;
+      if(emailKey(a.email)===emailKey(b.email)) continue;
+      const score=nameSimilarity(a.name,b.name);
+      if(score>=0.86){
+        const key='similar-name:'+[compactNameKey(a.name),compactNameKey(b.name)].sort().join(':');
+        pushGroup(key,'Very similar names with different emails',a);
+        pushGroup(key,'Very similar names with different emails',b);
+      }
+    }
+  }
 
   const seen=new Set();
   return [...byKey.values()].filter(g=>{
     const distinctEmails=new Set([...g.emails].map(e=>e.toLowerCase()));
-    const distinctNames=new Set([...g.names].map(n=>n.toLowerCase().replace(/\s+/g,' ').trim()));
+    const distinctNames=new Set([...g.names].map(n=>nameKey(n)));
     const sourceIds=new Set(g.records.map(r=>r.source+':'+r.id));
     const looksDuplicate=(g.key.startsWith('email:')&&distinctNames.size>1) ||
       (g.key.startsWith('name:')&&distinctEmails.size>1) ||
+      (g.key.startsWith('similar-name:')&&distinctEmails.size>1) ||
       (g.key.startsWith('email:')&&sourceIds.size>1&&distinctEmails.size===1&&distinctNames.size>1);
     if(!looksDuplicate) return false;
     const sig=[...distinctEmails].sort().join('|')+'::'+[...distinctNames].sort().join('|');
@@ -1721,8 +1763,9 @@ function showDuplicateBanner(el,prog){
   banner.style.cssText='background:var(--gold-light);border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;';
   const firstKey=jsString(dupes[0].key);
   const safeProg=jsString(prog);
+  const similarCount=dupes.filter(g=>g.key.startsWith('similar-name:')).length;
   banner.innerHTML=`
-    <div><strong>Possible duplicate student account${dupes.length>1?'s':''}</strong>: ${dupes.map(g=>escHTML([...g.names][0]||[...g.emails][0]||g.key)).join(', ')}</div>
+    <div><strong>Possible duplicate student account${dupes.length>1?'s':''}</strong>${similarCount?` <span style="font-weight:400;color:#8a6000;">(${similarCount} by similar name)</span>`:''}: ${dupes.map(g=>escHTML([...g.names][0]||[...g.emails][0]||g.key)).join(', ')}</div>
     <button class="btn btn-primary btn-sm" onclick="openDuplicateReviewModal('${firstKey}','${safeProg}')">Review duplicates</button>`;
   el.prepend(banner);
 }
@@ -1804,7 +1847,7 @@ function openDuplicateReviewModal(groupKey,prog){
         <tbody>${rows}</tbody>
       </table>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--muted);margin-bottom:16px;">
-        Merge will keep one student account, move matching submissions/manual grades to that account, and update exam attempt records.
+        Merge will keep one student account, move matching submissions/manual grades to that account, and update exam attempt records. Similar-name matches are only suggestions, so review the names and emails carefully first.
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;">
         <button class="btn btn-outline" onclick="document.getElementById('duplicate-review-overlay').remove()">Cancel</button>
@@ -2200,17 +2243,24 @@ function renderProgGrades(el,prog,subs){
   // Collect ALL students
   const studentMap={};
   subs.forEach(s=>{
-    if(!studentMap[s.studentEmail])
-      studentMap[s.studentEmail]={name:s.studentName,email:s.studentEmail,program:s.program};
+    const key=emailKey(s.studentEmail);
+    if(!studentMap[key])
+      studentMap[key]={name:s.studentName,email:s.studentEmail,program:s.program,emailKey:key};
   });
   manualGradesForView.forEach(g=>{
-    if(!studentMap[g.email])studentMap[g.email]={name:g.name,email:g.email,program:g.program};
+    const key=emailKey(g.email);
+    if(!studentMap[key])studentMap[key]={name:g.name,email:g.email,program:g.program,emailKey:key};
   });
   (db_students||[]).filter(s=>{
-    if(activeTermEmails&&!activeTermEmails.has(s.email.toLowerCase())) return false;
+    if(activeTermEmails&&!activeTermEmails.has(emailKey(s.email))) return false;
     return studentBelongsToProgram(s.programs,prog);
   }).forEach(s=>{
-    if(!studentMap[s.email])studentMap[s.email]={name:s.name,email:s.email,program:s.programs||prog};
+    const key=emailKey(s.email);
+    if(!studentMap[key]) studentMap[key]={name:s.name,email:s.email,program:s.programs||prog,emailKey:key};
+    else {
+      studentMap[key].name=studentMap[key].name||s.name;
+      studentMap[key].program=studentMap[key].program||s.programs||prog;
+    }
   });
 
   // Exams for this program
@@ -2234,10 +2284,12 @@ function renderProgGrades(el,prog,subs){
   manualLabels.sort((a,b)=>a.label.localeCompare(b.label));
 
   function getExamScore(email,examId){
-    return subs.find(s=>s.studentEmail===email&&s.examId===examId)?.percentage;
+    const key=emailKey(email);
+    return subs.find(s=>emailKey(s.studentEmail)===key&&s.examId===examId)?.percentage;
   }
   function getManualScore(email,category,label){
-    const mg=manualGradesForView.find(g=>g.email===email&&g.category===category&&g.label===label);
+    const key=emailKey(email);
+    const mg=manualGradesForView.find(g=>emailKey(g.email)===key&&g.category===category&&g.label===label);
     return mg?Math.round(mg.grade/mg.maxGrade*100):undefined;
   }
 
@@ -2256,27 +2308,31 @@ function renderProgGrades(el,prog,subs){
       } else if(w.key==='final'){
         const scores=progExams.filter(e=>e.examType==='final')
           .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
-        const manScores=manualGradesForView.filter(g=>g.email===email&&g.category==='final')
+        const key=emailKey(email);
+        const manScores=manualGradesForView.filter(g=>emailKey(g.email)===key&&g.category==='final')
           .map(g=>Math.round(g.grade/g.maxGrade*100));
         const all=[...scores,...manScores];
         if(all.length) val=Math.round(all.reduce((a,b)=>a+b,0)/all.length);
       } else if(w.key==='review'){
         const scores=progExams.filter(e=>e.examType==='review')
           .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
-        const manScores=manualGradesForView.filter(g=>g.email===email&&g.category==='review')
+        const key=emailKey(email);
+        const manScores=manualGradesForView.filter(g=>emailKey(g.email)===key&&g.category==='review')
           .map(g=>Math.round(g.grade/g.maxGrade*100));
         const all=[...scores,...manScores];
         if(all.length) val=Math.round(all.reduce((a,b)=>a+b,0)/all.length);
       } else if(w.key==='practice'){
         const scores=progExams.filter(e=>e.examType==='practice')
           .map(e=>getExamScore(email,e.id)).filter(v=>v!==undefined);
-        const manScores=manualGradesForView.filter(g=>g.email===email&&g.category==='practice')
+        const key=emailKey(email);
+        const manScores=manualGradesForView.filter(g=>emailKey(g.email)===key&&g.category==='practice')
           .map(g=>Math.round(g.grade/g.maxGrade*100));
         const all=[...scores,...manScores];
         if(all.length) val=Math.round(all.reduce((a,b)=>a+b,0)/all.length);
       } else {
         // workbook, skills
-        const manScores=manualGradesForView.filter(g=>g.email===email&&g.category===w.key)
+        const key=emailKey(email);
+        const manScores=manualGradesForView.filter(g=>emailKey(g.email)===key&&g.category===w.key)
           .map(g=>Math.round(g.grade/g.maxGrade*100));
         if(manScores.length) val=Math.round(manScores.reduce((a,b)=>a+b,0)/manScores.length);
       }
@@ -2287,9 +2343,10 @@ function renderProgGrades(el,prog,subs){
 
   // ── Individual student view ──
   function renderStudentView(email){
-    const st=studentMap[email];
-    const eSubs=subs.filter(s=>s.studentEmail===email).sort((a,b)=>new Date(a.date)-new Date(b.date));
-    const manuals=manualGradesForView.filter(g=>g.email===email).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const key=emailKey(email);
+    const st=studentMap[key];
+    const eSubs=subs.filter(s=>emailKey(s.studentEmail)===key).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const manuals=manualGradesForView.filter(g=>emailKey(g.email)===key).sort((a,b)=>new Date(a.date)-new Date(b.date));
     const final=calcFinal(email);
     const examMap={};getTermExamSource(currentTermId).forEach(e=>examMap[e.id]=e);
     const typeLabel={exam:'📝 Exam',review:'🔍 Review',practice:'Practice Exam',final:'🎓 Final',workbook:'📚 Workbook',skills:'🏋 Skills'};
@@ -2479,7 +2536,7 @@ function renderProgGrades(el,prog,subs){
     });
   }
 
-  const allStudents=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
+    const allStudents=Object.values(studentMap).sort((a,b)=>a.name.localeCompare(b.name));
   if(selectedStudent) renderStudentView(selectedStudent);
   else renderProgramView(allStudents);
 }
@@ -2500,7 +2557,8 @@ function enterPaperScore(email,name,examId,examTitle,prog){
     detail:[], attemptsUsed:1, attemptsMax:3, attemptsLeft:0,
     date:new Date().toISOString()
   };
-  const idx=db.submissions.findIndex(s=>s.studentEmail===email&&s.examId===examId);
+  const key=emailKey(email);
+  const idx=db.submissions.findIndex(s=>emailKey(s.studentEmail)===key&&s.examId===examId);
   if(idx>=0) db.submissions[idx]=sub; else db.submissions.push(sub);
   saveDB(); syncSubmission(sub).catch(()=>{});
   toast('✓ Paper score of '+pctNum+'% saved for '+name);
@@ -2533,13 +2591,17 @@ function openAddManualGradeForStudent(email,name,program){
   document.getElementById('mg-max').value='100';
   populateMGStudentDropdown(studentToTeacher(program));
   const sel=document.getElementById('mg-student-select');
-  if(sel) sel.value=email;
+  if(sel){
+    const match=[...sel.options].find(o=>emailKey(o.value)===emailKey(email));
+    sel.value=match?match.value:email;
+  }
   openModal('modal-manual-grade');
 }
 
 // ── Open manual grade for specific student + label (edit existing) ──
 function openAddManualGradeForStudentLabel(email,name,program,category,label){
-  const existing=db_manualGrades.find(g=>g.email===email&&g.category===category&&g.label===label&&(g.termId||'')===(currentTermId||''));
+  const key=emailKey(email);
+  const existing=db_manualGrades.find(g=>emailKey(g.email)===key&&g.category===category&&g.label===label&&(g.termId||'')===(currentTermId||''));
   document.getElementById('mg-id').value=existing?existing.id:'';
   document.getElementById('mg-email').value=email;
   document.getElementById('mg-name').value=name;
@@ -2550,7 +2612,10 @@ function openAddManualGradeForStudentLabel(email,name,program,category,label){
   document.getElementById('mg-max').value=existing?existing.maxGrade:100;
   populateMGStudentDropdown(studentToTeacher(program));
   const sel=document.getElementById('mg-student-select');
-  if(sel) sel.value=email;
+  if(sel){
+    const match=[...sel.options].find(o=>emailKey(o.value)===key);
+    sel.value=match?match.value:email;
+  }
   openModal('modal-manual-grade');
 }
 
@@ -2577,14 +2642,24 @@ async function deleteManualLabelCol(category,label,prog){
 
 // ── Delete student account ──
 async function deleteStudentConfirm(email){
-  const st=db_students.find(s=>s.email===email);
+  const key=emailKey(email);
+  const st=db_students.find(s=>emailKey(s.email)===key);
   const name=st?st.name:email;
   if(!confirm('Delete student account for '+name+'?\n\nThis removes their registration, all submissions, and attempt records. This cannot be undone.')) return;
-  db_students=db_students.filter(s=>s.email!==email);
-  const subIds=db.submissions.filter(s=>s.studentEmail===email).map(s=>s.id);
-  db.submissions=db.submissions.filter(s=>s.studentEmail!==email);
-  db.exams.forEach(e=>{ if(e.studentAttempts&&e.studentAttempts[email]) delete e.studentAttempts[email]; });
+  const matchingStudentEmails=db_students.filter(s=>emailKey(s.email)===key).map(s=>s.email);
+  db_students=db_students.filter(s=>emailKey(s.email)!==key);
+  const subIds=db.submissions.filter(s=>emailKey(s.studentEmail)===key).map(s=>s.id);
+  db.submissions=db.submissions.filter(s=>emailKey(s.studentEmail)!==key);
+  db.exams.forEach(e=>{
+    if(!e.studentAttempts) return;
+    Object.keys(e.studentAttempts).forEach(k=>{
+      if(emailKey(k.split('::')[0])===key) delete e.studentAttempts[k];
+    });
+  });
   await sbFetch('ep_students?email=eq.'+encodeURIComponent(email),{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  for(const old of matchingStudentEmails.filter(old=>old!==email)){
+    await sbFetch('ep_students?email=eq.'+encodeURIComponent(old),{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  }
   for(const id of subIds){
     await sbFetch('ep_submissions?id=eq.'+id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
   }
@@ -2598,7 +2673,8 @@ function showStudentReview(examId){
   const exam=db.exams.find(e=>e.id===examId);
   if(!exam){ toast('Exam not found.'); return; }
   const email=ss._portalEmail;
-  const sub=db.submissions.find(s=>s.examId===examId&&s.studentEmail===email&&(s.termId||'')===(ss._portalTermId||''));
+  const key=emailKey(email);
+  const sub=db.submissions.find(s=>s.examId===examId&&emailKey(s.studentEmail)===key&&(s.termId||'')===(ss._portalTermId||''));
   if(!sub){ toast('No submission found for this exam.'); return; }
 
   const letters=['A','B','C','D'];
@@ -2699,7 +2775,8 @@ function showSubmissionDetail(subId){
 }
 function inlineEditGrade(spanEl,email,examId,currentPct,type){
   const td=spanEl.parentElement;
-  const sub=db.submissions.find(s=>s.studentEmail===email&&s.examId===examId);
+  const key=emailKey(email);
+  const sub=db.submissions.find(s=>emailKey(s.studentEmail)===key&&s.examId===examId);
   if(!sub){ toast('Submission not found.'); return; }
   td.innerHTML=`<div style="display:flex;align-items:center;gap:4px;">
     <input type="number" min="0" max="100" value="${currentPct}" id="inline-grade-input"
@@ -3036,7 +3113,8 @@ async function confirmAddStudentsToTerm(){
     const name=cb.dataset.name||'';
     const prog=cb.dataset.prog||currentProgram;
     // Update in db_students
-    const existing=db_students.find(s=>s.email===email);
+    const key=emailKey(email);
+    const existing=db_students.find(s=>emailKey(s.email)===key);
     if(existing){ existing.termId=termId; }
     else { db_students.push({email,name,programs:prog,termId,registeredAt:new Date().toISOString(),integrityPassed:false}); }
     // Sync to Supabase
@@ -3046,11 +3124,11 @@ async function confirmAddStudentsToTerm(){
       body:{email,name,programs:prog,term_id:termId,registered_at:new Date().toISOString(),integrity_passed:false}
     }).catch(()=>{});
     // Also update their submissions to this term
-    db.submissions.filter(s=>s.studentEmail===email&&!s.termId).forEach(async s=>{
+    db.submissions.filter(s=>emailKey(s.studentEmail)===key&&!s.termId).forEach(async s=>{
       s.termId=termId;
       await sbFetch('ep_submissions?id=eq.'+s.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:termId}}).catch(()=>{});
     });
-    db_manualGrades.filter(g=>g.email===email&&!g.termId).forEach(async g=>{
+    db_manualGrades.filter(g=>emailKey(g.email)===key&&!g.termId).forEach(async g=>{
       g.termId=termId;
       await sbFetch('ep_manual_grades?id=eq.'+g.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:termId}}).catch(()=>{});
     });
@@ -3068,14 +3146,15 @@ async function removeStudentFromTerm(email){
 
 async function removeStudentFromAnyTerm(email,termId){
   if(!confirm('Remove this student from the term? Their submissions and manual grades will move back to Legacy/unselected.')) return;
-  const stu=db_students.find(s=>s.email===email);
+  const key=emailKey(email);
+  const stu=db_students.find(s=>emailKey(s.email)===key);
   if(stu) stu.termId='';
   await sbFetch('ep_students?email=eq.'+encodeURIComponent(email),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
-  db.submissions.filter(s=>s.studentEmail===email&&s.termId===termId).forEach(async s=>{
+  db.submissions.filter(s=>emailKey(s.studentEmail)===key&&s.termId===termId).forEach(async s=>{
     s.termId='';
     await sbFetch('ep_submissions?id=eq.'+s.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
   });
-  db_manualGrades.filter(g=>g.email===email&&g.termId===termId).forEach(async g=>{
+  db_manualGrades.filter(g=>emailKey(g.email)===key&&g.termId===termId).forEach(async g=>{
     g.termId='';
     await sbFetch('ep_manual_grades?id=eq.'+g.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
   });
@@ -3489,11 +3568,11 @@ function populateMGStudentDropdown(prog){
   const studentMap={};
   db.submissions.filter(s=>{
     return studentBelongsToProgram(s.program,prog)||prog==='';
-  }).forEach(s=>{ studentMap[s.studentEmail.toLowerCase()]={name:s.studentName,email:s.studentEmail,program:s.program}; });
+  }).forEach(s=>{ studentMap[emailKey(s.studentEmail)]={name:s.studentName,email:s.studentEmail,program:s.program}; });
   (db_students||[]).filter(s=>{
     return studentBelongsToProgram(s.programs,prog)||prog==='';
   }).forEach(s=>{
-    const key=s.email.toLowerCase();
+    const key=emailKey(s.email);
     if(!studentMap[key]) studentMap[key]={name:s.name,email:s.email,program:s.programs};
   });
 
@@ -3538,13 +3617,17 @@ function openManualGradeForStudent(cat,email,name,program){
   // Populate dropdown and pre-select this student
   populateMGStudentDropdown(studentToTeacher(program));
   const sel=document.getElementById('mg-student-select');
-  if(sel) sel.value=email;
+  if(sel){
+    const match=[...sel.options].find(o=>emailKey(o.value)===emailKey(email));
+    sel.value=match?match.value:email;
+  }
   openModal('modal-manual-grade');
 }
 
 function openEditStudentFromGradebook(email){
-  const sub=db.submissions.find(s=>s.studentEmail===email);
-  const stu=db_students.find(s=>s.email===email);
+  const key=emailKey(email);
+  const sub=db.submissions.find(s=>emailKey(s.studentEmail)===key);
+  const stu=db_students.find(s=>emailKey(s.email)===key);
   const sid=sub?sub.id:null;
   if(sid){
     openEditStudent(sid);
@@ -5249,7 +5332,7 @@ function showStudentConfirm(){
 async function registerStudent(name,email,program,termId){
   const stu={email,name,programs:program,term_id:termId||'',registered_at:new Date().toISOString(),integrity_passed:true};
   // Add to local cache
-  const idx=db_students.findIndex(s=>s.email===email);
+  const idx=db_students.findIndex(s=>emailKey(s.email)===emailKey(email));
   const stuObj={email,name,programs:program,termId:termId||'',registeredAt:stu.registered_at,integrityPassed:true};
   if(idx>=0) db_students[idx]=stuObj; else db_students.push(stuObj);
   await sbFetch('ep_students',{
@@ -5467,6 +5550,7 @@ function _renderExamList(name, email, program){
   ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program;
   studentProgram=program;
   const portalTermId=ss._portalTermId||'';
+  const portalEmailKey=emailKey(email);
 
   document.getElementById('student-exams-title').textContent = name+"'s Portal";
   document.getElementById('student-exams-sub').textContent = program;
@@ -5511,7 +5595,7 @@ function _renderExamList(name, email, program){
     const locked  = rec ? (rec.locked||rec.count>=rec.max) : false;
     const best    = rec ? rec.bestScore : null;
     const taken   = rec && rec.count>0;
-    const sub     = db.submissions.find(s=>s.studentEmail===email&&s.examId===e.id&&(s.termId||'')===portalTermId);
+    const sub     = db.submissions.find(s=>emailKey(s.studentEmail)===portalEmailKey&&s.examId===e.id&&(s.termId||'')===portalTermId);
     // Use submission percentage as source of truth (matches teacher view)
     const displayScore = sub ? sub.percentage : best;
     if(taken){ done.push({e,rec,attLeft,locked,best:displayScore,sub}); }
@@ -5525,7 +5609,7 @@ function _renderExamList(name, email, program){
   const dismissed = JSON.parse(sessionStorage.getItem(notifKey)||'[]');
   // Collect all grade changes not yet dismissed
   const notifications=[];
-  const allSubs = db.submissions.filter(s=>s.studentEmail===email&&(s.termId||'')===portalTermId);
+  const allSubs = db.submissions.filter(s=>emailKey(s.studentEmail)===portalEmailKey&&(s.termId||'')===portalTermId);
   allSubs.forEach(s=>{
     const notifId = 'sub_'+s.id+'_'+s.percentage;
     const stored = localStorage.getItem('ep_seen_grade_'+s.id);
@@ -5580,13 +5664,13 @@ function _renderExamList(name, email, program){
   // ── GRADES section — matches teacher gradebook ──
   const allGrades=[];
   // Exam grades from submissions
-  db.submissions.filter(s=>s.studentEmail===email&&(s.termId||'')===portalTermId).forEach(s=>{
+  db.submissions.filter(s=>emailKey(s.studentEmail)===portalEmailKey&&(s.termId||'')===portalTermId).forEach(s=>{
     const exam=db.exams.find(e=>e.id===s.examId)||db.exams.find(e=>e.title===s.examTitle);
     const icon=typeIcon[(exam?exam.examType:null)||'exam']||'📝';
     allGrades.push({title:exam?exam.title:s.examTitle||'Exam',icon,pct:s.percentage,source:'exam'});
   });
   // Manual grades from teacher
-  db_manualGrades.filter(g=>g.email===email&&(g.termId||'')===portalTermId).forEach(g=>{
+  db_manualGrades.filter(g=>emailKey(g.email)===portalEmailKey&&(g.termId||'')===portalTermId).forEach(g=>{
     const cat=GRADE_CATEGORIES.find(c=>c.key===g.category);
     allGrades.push({title:g.label,icon:cat?cat.icon:'📝',pct:Math.round(g.grade/g.maxGrade*100),source:'manual'});
   });
@@ -5836,7 +5920,7 @@ function submitExam(){
   const existingIdx=db.submissions.findIndex(s=>{
     const sExam=db.exams.find(e=>e.id===s.examId);
     const sTitle=sExam?sExam.title:s.examTitle||'';
-    return s.studentEmail===ss.email && (s.examId===exam.id || sTitle===exam.title);
+    return emailKey(s.studentEmail)===emailKey(ss.email) && (s.examId===exam.id || sTitle===exam.title);
   });
 
   const sub={
