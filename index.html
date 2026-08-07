@@ -306,11 +306,10 @@ textarea{resize:vertical;}
       <button class="btn btn-primary btn-sm" onclick="openNewExamModal()">+ New Exam</button>
     </div>
     <!-- Program tabs -->
-    <div style="background:var(--surface);border-bottom:1px solid var(--border);display:flex;flex-shrink:0;">
+    <div class="prog-tab-bar" style="background:var(--surface);border-bottom:1px solid var(--border);display:flex;flex-shrink:0;">
       <button class="dash-tab active" id="ptab-exams" onclick="switchProgTab('exams')">📋 Exams</button>
-      <button class="dash-tab" id="ptab-subs" onclick="switchProgTab('subs')">📊 Submissions</button>
-      <button class="dash-tab" id="ptab-grades" onclick="switchProgTab('grades')">🎓 Grade Book</button>
-      <button class="dash-tab" id="ptab-settings" onclick="switchProgTab('settings')">⚙ Grade Weights</button>
+      <button class="dash-tab" id="ptab-terms" onclick="switchProgTab('terms')">📅 Terms</button>
+      <button class="dash-tab" id="ptab-legacy" onclick="switchProgTab('legacy')">🗂 Legacy</button>
     </div>
     <!-- Program tab content -->
     <div id="prog-tab-content" style="flex:1;overflow-y:auto;padding:24px;"></div>
@@ -470,7 +469,7 @@ textarea{resize:vertical;}
       <div class="field"><label>Full Name</label><input id="sp-ret-name" type="text" placeholder="Jane Doe"/></div>
       <div class="field"><label>Email Address</label><input id="sp-ret-email" type="email" placeholder="jane@school.edu"/></div>
       <div class="field"><label>Program</label>
-        <select id="sp-ret-program">
+        <select id="sp-ret-program" onchange="populateTermSelect(this.value,'sp-ret-term','sp-ret-term-section','sp-ret-term-id')">
           <option value="">— Select your program —</option>
           <option>Nurse Aide Morning</option>
           <option>Nurse Aide Evening</option>
@@ -481,6 +480,11 @@ textarea{resize:vertical;}
           <option>Medical Assistant + Phlebotomy + EKG</option>
         </select>
       </div>
+      <div class="field" id="sp-ret-term-section" style="display:none;">
+        <label>Term / Class</label>
+        <select id="sp-ret-term"><option value="">— Select your term —</option></select>
+      </div>
+      <input type="hidden" id="sp-ret-term-id"/>
       <button class="btn btn-primary" style="width:100%;" onclick="showStudentConfirmReturning()">Continue →</button>
     </div>
 
@@ -1016,7 +1020,10 @@ const QB_B64 = document.getElementById('qb-b64-data').innerHTML.trim();
 // ═══════════════════════════════════════════════════════════════
 // Programs: teacher sees base names; students see with shift (Morning/Evening)
 // An exam assigned to "Nurse Aide" is visible to both "Nurse Aide Morning" AND "Nurse Aide Evening"
-const TEACHER_PROGRAMS = ['Nurse Aide','Medication Aide','Phlebotomy','EKG','Medical Assistant + Phlebotomy + EKG'];
+// Dynamic programs — loaded from ep_programs, falls back to hardcoded
+const TEACHER_PROGRAMS_DEFAULT = ['Nurse Aide','Medication Aide','Phlebotomy','EKG','Medical Assistant + Phlebotomy + EKG'];
+function getTeacherPrograms(){ return db_programs.length ? db_programs.map(p=>p.name) : TEACHER_PROGRAMS_DEFAULT; }
+const TEACHER_PROGRAMS = TEACHER_PROGRAMS_DEFAULT; // kept for backward compat
 const STUDENT_PROGRAMS = ['Nurse Aide Morning','Nurse Aide Evening','Medication Aide Morning','Medication Aide Evening','EKG','Phlebotomy','Medical Assistant + Phlebotomy + EKG'];
 // Map student program → teacher program for grouping submissions
 function studentToTeacher(sp){
@@ -1046,6 +1053,8 @@ function studentBelongsToProgram(studentProgram, dashboardProgram){
 }
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
+  const termId=ss._portalTermId;
+  if(termId){ const term=db_terms.find(t=>t.id===termId); if(term&&term.isClosed) return false; }
   // Check scheduled dates
   const now=new Date();
   if(exam.openAt && new Date(exam.openAt)>now) return false; // not open yet
@@ -1130,7 +1139,10 @@ async function sbFetch(path, opts={}){
 const MAX_ATTEMPTS = 3;
 
 let db = {exams:[], submissions:[], settings:{}, pin:'123456', trash:[]};
-let db_students = []; // registered students
+let db_students    = []; // registered students
+let db_programs    = []; // dynamic programs from ep_programs
+let db_terms       = []; // terms from ep_terms
+let currentTermId  = null; // selected term in teacher view
 let dbLoaded = false;
 
 function getAttemptRecord(exam, email){
@@ -1226,6 +1238,7 @@ async function syncSubmission(sub){
     headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
     body:{
       id:sub.id, exam_id:sub.examId, exam_title:sub.examTitle||'',
+      term_id:sub.termId||'',
       student_name:sub.studentName, student_email:sub.studentEmail,
       program:sub.program, score:sub.score, total:sub.total,
       percentage:sub.percentage, detail:sub.detail||[],
@@ -1360,6 +1373,10 @@ let ss = { name:'', email:'', program:'', examId:null, answers:{}, qOrder:[], cu
   set _portalEmail(v){ sessionStorage.setItem('ep_pemail',v||''); },
   get _portalProgram(){ return sessionStorage.getItem('ep_pprog')||''; },
   set _portalProgram(v){ sessionStorage.setItem('ep_pprog',v||''); },
+  get _portalTermId(){ return sessionStorage.getItem('ep_ptermid')||''; },
+  set _portalTermId(v){ sessionStorage.setItem('ep_ptermid',v||''); },
+  get _portalTermId(){ return sessionStorage.getItem('ep_ptermid')||''; },
+  set _portalTermId(v){ sessionStorage.setItem('ep_ptermid',v||''); },
 };
 
 // retake
@@ -1509,7 +1526,8 @@ function switchSidebarTab(){}
 //  PROGRAM-FIRST TEACHER NAVIGATION
 // ═══════════════════════════════════════════════════════════════
 const PROG_ICONS = {'Nurse Aide':'🏥','Medication Aide':'💊','Phlebotomy':'🩸','EKG':'💓','Medical Assistant + Phlebotomy + EKG':'🩺','General':'📋'};
-let currentProgram = null; // selected program
+let currentProgram = null; // selected program name
+let currentProgId   = null; // selected program id
 let currentProgTab = 'exams'; // exams|subs|grades|settings
 
 // In-memory grade data (synced to Supabase)
@@ -1594,19 +1612,29 @@ function renderDashboard(){
   });
 }
 
-function openProgramDetail(prog){
-  currentProgram = prog;
+function openProgramDetail(progId, progName){
+  // Support both old (name only) and new (id + name) calls
+  if(!progName){ progName=progId; progId='legacy-'+progId.replace(/\W+/g,'-').toLowerCase(); }
+  currentProgram = progName;
+  currentProgId  = progId;
   currentProgTab = 'exams';
+  currentTermId  = null;
   document.getElementById('teacher-dashboard').style.display='none';
   document.getElementById('teacher-program-detail').style.display='flex';
-  document.getElementById('prog-detail-title').textContent = (PROG_ICONS[prog]||'📋')+' '+prog;
+  document.getElementById('prog-detail-title').textContent = (PROG_ICONS[progName]||'📋')+' '+progName;
 
-  // Update tab active states
-  ['exams','subs','grades','settings'].forEach(t=>{
-    const btn=document.getElementById('ptab-'+t);
-    if(btn) btn.classList.toggle('active',t==='exams');
-  });
-
+  // Show Exams + Terms tabs (hide old subs/grades/settings - those live inside terms now)
+  const tabBar = document.querySelector('#teacher-program-detail .prog-tab-bar');
+  if(tabBar) tabBar.innerHTML=`
+    <button class="dash-tab active" id="ptab-exams" onclick="switchProgTab('exams')">📋 Exams</button>
+    <button class="dash-tab" id="ptab-terms" onclick="switchProgTab('terms')">📅 Terms</button>
+    <button class="dash-tab" id="ptab-legacy" onclick="switchProgTab('legacy')">🗂 Legacy</button>`;
+  else {
+    ['exams','terms','legacy','subs','grades','settings'].forEach(t=>{
+      const btn=document.getElementById('ptab-'+t);
+      if(btn) btn.classList.toggle('active',t==='exams');
+    });
+  }
   renderProgTab();
 }
 
@@ -2176,7 +2204,7 @@ function enterPaperScore(email,name,examId,examTitle,prog){
   const score=Math.round(pctNum*(exam.questions.length||10)/100);
   const sub={
     id:Date.now().toString(), examId, examTitle,
-    studentName:name, studentEmail:email, program:prog,
+    studentName:name, studentEmail:email, program:prog, termId:ss._portalTermId||'',
     score, total:exam.questions.length||0, percentage:pctNum,
     detail:[], attemptsUsed:1, attemptsMax:3, attemptsLeft:0,
     date:new Date().toISOString()
@@ -2444,10 +2472,357 @@ function filterGradeRows(q){
   });
 }
 
-function renderProgWeightSettings(el,prog){
+// ════════════════════════════════════════════════════════════
+//  TERMS SYSTEM
+// ════════════════════════════════════════════════════════════
+
+// ── Terms list view ──
+function renderTermsList(el,prog,progId,terms){
+  el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:13px;color:var(--muted);">${terms.length} term${terms.length!==1?'s':''} for ${prog}</div>
+      <button class="btn btn-primary btn-sm" onclick="openAddTermModal('${progId}','${prog}')">+ New Term</button>
+    </div>
+    ${terms.length?terms.map(t=>`
+      <div style="background:var(--surface);border:1.5px solid ${t.isClosed?'var(--border)':'var(--accent)'};border-radius:12px;padding:16px 18px;margin-bottom:10px;cursor:pointer;" data-termid="${t.id}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="font-weight:600;font-size:15px;">${t.name}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:3px;">
+              ${t.startDate?'📅 '+fmtDateTime(t.startDate):'No start date'}
+              ${t.endDate?' → '+fmtDateTime(t.endDate):''}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-size:12px;padding:3px 10px;border-radius:20px;font-weight:600;background:${t.isClosed?'var(--border)':'var(--green-light)'};color:${t.isClosed?'var(--muted)':'var(--green)'};">${t.isClosed?'Closed':'Active'}</span>
+            ${!t.isClosed?`<button class="btn btn-outline btn-xs" onclick="event.stopPropagation();closeTerm('${t.id}')">🔒 Close Term</button>`:''}
+            <button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteTerm('${t.id}')">🗑</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+          ${db.submissions.filter(s=>s.termId===t.id).length} submissions · 
+          ${new Set(db_students.filter(s=>s.termId===t.id).map(s=>s.email)).size} students
+          ${t.isClosed?' · Snapshot frozen':''}
+        </div>
+      </div>`).join('')
+    :'<div class="empty"><div class="empty-icon">📅</div>No terms yet. Create the first term for this program.</div>'}`;
+
+  el.querySelectorAll('[data-termid]').forEach(card=>{
+    card.addEventListener('click',()=>openTermDetail(card.dataset.termid));
+  });
+}
+
+// ── Open term detail ──
+function openTermDetail(termId){
+  currentTermId=termId;
+  currentProgTab='term-subs';
+  const term=db_terms.find(t=>t.id===termId);
+  if(!term) return;
+
+  // Update header
+  document.getElementById('prog-detail-title').textContent='📅 '+term.name;
+
+  // Replace tab bar with term-level tabs
+  const tabBar=document.querySelector('#teacher-program-detail .prog-tab-bar')||document.querySelector('#teacher-program-detail > div:nth-child(2)');
+  const tabContainer=document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
+  if(tabContainer){
+    tabContainer.innerHTML=`
+      <button class="dash-tab" id="ptab-back" onclick="backFromTerm()">← Terms</button>
+      <button class="dash-tab active" id="ptab-term-subs" onclick="switchProgTab('term-subs')">📊 Submissions</button>
+      <button class="dash-tab" id="ptab-term-students" onclick="switchProgTab('term-students')">👥 Students</button>
+      <button class="dash-tab" id="ptab-term-grades" onclick="switchProgTab('term-grades')">🎓 Gradebook</button>
+      <button class="dash-tab" id="ptab-term-weights" onclick="switchProgTab('term-weights')">⚙ Grade Weights</button>`;
+  }
+  renderProgTab();
+}
+
+function backFromTerm(){
+  currentTermId=null;
+  currentProgTab='terms';
+  // Restore program-level tabs
+  const tabContainer=document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
+  if(tabContainer){
+    tabContainer.innerHTML=`
+      <button class="dash-tab active" id="ptab-exams" onclick="switchProgTab('exams')">📋 Exams</button>
+      <button class="dash-tab" id="ptab-terms" onclick="switchProgTab('terms')">📅 Terms</button>
+      <button class="dash-tab" id="ptab-legacy" onclick="switchProgTab('legacy')">🗂 Legacy</button>`;
+  }
+  document.getElementById('prog-detail-title').textContent=(PROG_ICONS[currentProgram]||'📋')+' '+currentProgram;
+  renderProgTab();
+}
+
+// ── Term-level tabs ──
+function renderTermSubs(el){
+  const term=db_terms.find(t=>t.id===currentTermId);
+  if(!term){ el.innerHTML='<div class="empty">Term not found.</div>'; return; }
+  const subs=db.submissions.filter(s=>s.termId===currentTermId);
+  renderProgSubs(el, currentProgram, subs);
+}
+
+function renderTermStudents(el){
+  const term=db_terms.find(t=>t.id===currentTermId);
+  if(!term){ el.innerHTML='<div class="empty">Term not found.</div>'; return; }
+  const enrolled=db_students.filter(s=>s.termId===currentTermId);
+
+  el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+      <input type="text" id="term-student-search" placeholder="🔍 Search enrolled students..." style="padding:7px 12px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);flex:1;min-width:160px;"/>
+      <button class="btn btn-primary btn-sm" onclick="openAddStudentToTermModal()">+ Add Student</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${enrolled.length} student${enrolled.length!==1?'s':''} enrolled in this term</div>
+    ${enrolled.length?`<table class="sub-table" style="width:100%;" id="term-students-table">
+      <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Registered</th><th></th></tr></thead>
+      <tbody>${enrolled.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>`
+        <tr>
+          <td style="font-weight:500;">${s.name}</td>
+          <td style="font-size:12px;color:var(--muted);">${s.email}</td>
+          <td style="font-size:12px;">${s.programs}</td>
+          <td style="font-size:11px;color:var(--muted);">${s.registeredAt?new Date(s.registeredAt).toLocaleDateString():''}</td>
+          <td>
+            <button class="btn btn-outline btn-xs" onclick="removeStudentFromTerm('${s.email}')">✕ Remove</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`:'<div class="empty"><div class="empty-icon">👥</div>No students enrolled yet. Click "+ Add Student" to add some.</div>'}`;
+
+  // Wire search
+  const searchInput=el.querySelector('#term-student-search');
+  if(searchInput) searchInput.addEventListener('input',()=>{
+    const q=searchInput.value.toLowerCase();
+    el.querySelectorAll('#term-students-table tbody tr').forEach(row=>{
+      row.style.display=row.textContent.toLowerCase().includes(q)?'':'none';
+    });
+  });
+}
+
+function openAddStudentToTermModal(){
+  const term=db_terms.find(t=>t.id===currentTermId);
+  if(!term) return;
+
+  // Get all students from this program who are NOT already in this term
+  const enrolled=new Set(db_students.filter(s=>s.termId===currentTermId).map(s=>s.email));
+
+  // Students from legacy (no term) or other terms in this program
+  const candidates=db_students.filter(s=>{
+    if(enrolled.has(s.email)) return false;
+    const base=studentToTeacher(s.programs||'');
+    return base===currentProgram;
+  });
+
+  // Also get unique students from legacy submissions for this program
+  const legacyCandidates=[];
+  const seenEmails=new Set(db_students.map(s=>s.email));
+  db.submissions.filter(s=>studentToTeacher(s.program||'')===currentProgram&&!s.termId&&!enrolled.has(s.studentEmail)).forEach(s=>{
+    if(!seenEmails.has(s.studentEmail)){
+      seenEmails.add(s.studentEmail);
+      legacyCandidates.push({email:s.studentEmail,name:s.studentName,programs:s.program,termId:'',registeredAt:''});
+    }
+  });
+
+  const allCandidates=[...candidates,...legacyCandidates].sort((a,b)=>a.name.localeCompare(b.name));
+
+  // Build modal overlay
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  overlay.innerHTML=`
+    <div style="background:var(--surface);border-radius:16px;padding:24px;max-width:560px;width:100%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div>
+          <h3 style="font-size:18px;margin-bottom:2px;">Add Students to Term</h3>
+          <div style="font-size:12px;color:var(--muted);">${term.name}</div>
+        </div>
+        <button onclick="this.closest('[style*=fixed]').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted);">✕</button>
+      </div>
+      <input type="text" id="add-student-search" placeholder="🔍 Search by name or email..." style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:var(--bg);margin-bottom:12px;"/>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+        ${allCandidates.length} student${allCandidates.length!==1?'s':''} available · 
+        <button onclick="selectAllCandidates()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;text-decoration:underline;">Select all</button>
+        <button onclick="clearAllCandidates()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;text-decoration:underline;margin-left:8px;">Clear all</button>
+      </div>
+      <div id="candidate-list" style="flex:1;overflow-y:auto;border:1.5px solid var(--border);border-radius:8px;">
+        ${allCandidates.length
+          ?allCandidates.map(s=>`
+            <label id="cand-${s.email.replace(/[@.]/g,'_')}" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
+              <input type="checkbox" value="${s.email}" data-name="${s.name}" data-prog="${s.programs}" style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;"/>
+              <div>
+                <div style="font-weight:500;font-size:13px;">${s.name}</div>
+                <div style="font-size:11px;color:var(--muted);">${s.email} · ${s.programs||'Unknown program'}</div>
+              </div>
+            </label>`).join('')
+          :'<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;">No students available to add for this program.</div>'}
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;gap:8px;">
+        <div id="add-student-count" style="font-size:13px;color:var(--muted);">0 selected</div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="this.closest('[style*=fixed]').remove()" class="btn btn-outline">Cancel</button>
+          <button onclick="confirmAddStudentsToTerm()" class="btn btn-primary">Add Selected Students</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  // Wire search
+  const search=overlay.querySelector('#add-student-search');
+  search.addEventListener('input',()=>{
+    const q=search.value.toLowerCase();
+    overlay.querySelectorAll('#candidate-list label').forEach(label=>{
+      label.style.display=label.textContent.toLowerCase().includes(q)?'':'none';
+    });
+  });
+
+  // Wire checkboxes to update count
+  overlay.querySelectorAll('input[type="checkbox"]').forEach(cb=>{
+    cb.addEventListener('change',()=>{
+      const count=overlay.querySelectorAll('input[type="checkbox"]:checked').length;
+      const countEl=overlay.querySelector('#add-student-count');
+      if(countEl) countEl.textContent=count+' selected';
+    });
+  });
+
+  // Store overlay ref for confirm function
+  window._addStudentOverlay=overlay;
+}
+
+function selectAllCandidates(){
+  const overlay=window._addStudentOverlay;
+  if(!overlay) return;
+  overlay.querySelectorAll('#candidate-list input[type="checkbox"]').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
+  const count=overlay.querySelectorAll('input[type="checkbox"]:checked').length;
+  const countEl=overlay.querySelector('#add-student-count');
+  if(countEl) countEl.textContent=count+' selected';
+}
+
+function clearAllCandidates(){
+  const overlay=window._addStudentOverlay;
+  if(!overlay) return;
+  overlay.querySelectorAll('#candidate-list input[type="checkbox"]').forEach(cb=>cb.checked=false);
+  const countEl=overlay.querySelector('#add-student-count');
+  if(countEl) countEl.textContent='0 selected';
+}
+
+async function confirmAddStudentsToTerm(){
+  const overlay=window._addStudentOverlay;
+  if(!overlay) return;
+  const selected=[...overlay.querySelectorAll('#candidate-list input[type="checkbox"]:checked')];
+  if(!selected.length){ toast('Please select at least one student.'); return; }
+
+  const termId=currentTermId;
+  let count=0;
+  for(const cb of selected){
+    const email=cb.value;
+    const name=cb.dataset.name||'';
+    const prog=cb.dataset.prog||currentProgram;
+    // Update in db_students
+    const existing=db_students.find(s=>s.email===email);
+    if(existing){ existing.termId=termId; }
+    else { db_students.push({email,name,programs:prog,termId,registeredAt:new Date().toISOString(),integrityPassed:false}); }
+    // Sync to Supabase
+    await sbFetch('ep_students',{
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:{email,name,programs:prog,term_id:termId,registered_at:new Date().toISOString(),integrity_passed:false}
+    }).catch(()=>{});
+    // Also update their submissions to this term
+    db.submissions.filter(s=>s.studentEmail===email&&!s.termId).forEach(async s=>{
+      s.termId=termId;
+      await sbFetch('ep_submissions?id=eq.'+s.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:termId}}).catch(()=>{});
+    });
+    count++;
+  }
+  overlay.remove();
+  window._addStudentOverlay=null;
+  toast('✓ '+count+' student'+( count!==1?'s':'')+' added to term.');
+  renderProgTab();
+}
+
+async function removeStudentFromTerm(email){
+  if(!confirm('Remove this student from the term? Their submissions will remain but they will be unassigned from this term.')) return;
+  const stu=db_students.find(s=>s.email===email);
+  if(stu) stu.termId='';
+  await sbFetch('ep_students?email=eq.'+encodeURIComponent(email),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
+  toast('Student removed from term.');
+  renderProgTab();
+}
+
+function renderTermGrades(el){
+  const subs=db.submissions.filter(s=>s.termId===currentTermId);
+  renderProgGrades(el, currentProgram, subs);
+}
+
+function renderTermWeights(el){
+  const term=db_terms.find(t=>t.id===currentTermId);
+  if(!term){ el.innerHTML='<div class="empty">Term not found.</div>'; return; }
+  // Use term-specific weights
+  const prog=currentProgram;
+  if(!db_weights[currentTermId]) db_weights[currentTermId]=GRADE_CATEGORIES.map(c=>({...c,weight:Math.round(100/GRADE_CATEGORIES.length),enabled:false}));
+  renderProgWeightSettings(el, currentTermId, prog);
+}
+
+// ── Legacy data view ──
+function renderLegacyData(el,prog,legacySubs){
+  if(!legacySubs.length){ el.innerHTML='<div class="empty"><div class="empty-icon">🗂</div>No legacy data for this program.</div>'; return; }
+  el.innerHTML=`
+    <div style="background:var(--gold-light);border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;">
+      🗂 <strong>Legacy data</strong> — These are submissions and students from before the Terms system was added. Read-only.
+    </div>`;
+  const legacyEl=document.createElement('div');
+  el.appendChild(legacyEl);
+  renderProgSubs(legacyEl, prog, legacySubs);
+}
+
+// ── Add Program Modal ──
+function openAddProgramModal(){
+  const name=prompt('Enter program name (e.g. "EKG Morning"):');
+  if(!name||!name.trim()) return;
+  const hasShifts=confirm('Does this program have Morning/Evening shifts?');
+  const prog={id:'prog-'+Date.now(),name:name.trim(),hasShifts,createdAt:new Date().toISOString()};
+  db_programs.push(prog);
+  sbFetch('ep_programs',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:{id:prog.id,name:prog.name,has_shifts:prog.hasShifts,created_at:prog.createdAt}}).catch(()=>{});
+  renderDashboard();
+  toast('✓ Program "'+prog.name+'" added.');
+}
+
+// ── Add Term Modal ──
+function openAddTermModal(progId,progName){
+  const name=prompt('Enter term name (e.g. "Nurse Aide Morning June 2026"):');
+  if(!name||!name.trim()) return;
+  const startDate=prompt('Start date (YYYY-MM-DD or leave blank):')||'';
+  const endDate=prompt('End date (YYYY-MM-DD or leave blank):')||'';
+  const term={id:'term-'+Date.now(),programId:progId,name:name.trim(),startDate,endDate,isClosed:false,examSnapshot:[],gradeWeights:{},createdAt:new Date().toISOString()};
+  db_terms.push(term);
+  sbFetch('ep_terms',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:{id:term.id,program_id:term.programId,name:term.name,start_date:term.startDate||null,end_date:term.endDate||null,is_closed:false,exam_snapshot:[],grade_weights:{},created_at:term.createdAt}}).catch(()=>{});
+  toast('✓ Term "'+term.name+'" created.');
+  renderProgTab();
+}
+
+// ── Close Term (freeze snapshot) ──
+async function closeTerm(termId){
+  if(!confirm('Close this term? This will freeze all exam content and grades. Students can still view their grades but cannot take new exams.')) return;
+  const term=db_terms.find(t=>t.id===termId);
+  if(!term) return;
+  // Take snapshot of all exams for this program
+  const snapshot=db.exams.filter(e=>examBelongsToProgram(e.program,currentProgram)).map(e=>JSON.parse(JSON.stringify(e)));
+  term.isClosed=true;
+  term.examSnapshot=snapshot;
+  await sbFetch('ep_terms?id=eq.'+termId,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{is_closed:true,exam_snapshot:snapshot}}).catch(()=>{});
+  toast('✓ Term closed and content frozen.');
+  renderProgTab();
+}
+
+// ── Delete Term ──
+async function deleteTerm(termId){
+  if(!confirm('Delete this term? This will remove all student and grade data for this term. This cannot be undone.')) return;
+  db_terms=db_terms.filter(t=>t.id!==termId);
+  await sbFetch('ep_terms?id=eq.'+termId,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  toast('Term deleted.');
+  renderProgTab();
+}
+
+function renderProgWeightSettings(el,prog,displayProg){
+  const label=displayProg||prog;
   el.innerHTML=`
     <div style="max-width:480px;">
-      <h3 style="font-size:17px;margin-bottom:6px;">Grade Weights for ${prog}</h3>
+      <h3 style="font-size:17px;margin-bottom:6px;">Grade Weights for ${label}</h3>
       <p style="font-size:13px;color:var(--muted);margin-bottom:20px;">Enable the categories you grade and set how much each counts toward the final grade. Weights should add up to 100%.</p>
       <div id="inline-weight-rows"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
@@ -2528,11 +2903,19 @@ function saveGradeWeights(){
 }
 
 async function syncGradeWeights(prog){
-  // Store weights in ep_settings as JSON blob per program
-  const allWeights=db_weights;
+  // If saving for a term, update the term record
+  if(currentTermId && prog===currentTermId){
+    const term=db_terms.find(t=>t.id===currentTermId);
+    if(term){
+      term.gradeWeights=db_weights[currentTermId]||{};
+      await sbFetch('ep_terms?id=eq.'+currentTermId,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{grade_weights:term.gradeWeights}}).catch(()=>{});
+      return;
+    }
+  }
+  // Otherwise store in ep_settings
   await sbFetch('ep_settings?id=eq.1',{
     method:'PATCH', headers:{'Prefer':'return=minimal'},
-    body:{grade_weights:allWeights}
+    body:{grade_weights:db_weights}
   }).catch(()=>{});
 }
 
@@ -3812,11 +4195,8 @@ async function importBankWord(){
 
 // ── Refresh bank dropdown — loads from QB Supabase + EP's own banks ──
 async function qbRefreshBridge(){
-  const sel=document.getElementById('qb-bank-select');
-  if(!sel) return;
   const statusEl=document.getElementById('qb-bank-status');
   if(statusEl) statusEl.textContent='Loading banks…';
-  const cur=sel.value;
 
   // Load QB banks (read-only, from QB's Supabase)
   const qbBanks = await fetchQBBanks();
@@ -3827,41 +4207,18 @@ async function qbRefreshBridge(){
     ...db_banks.map(b=>({...b,_source:'ep'}))
   ].filter(b=>b&&b.name&&b.name!=='undefined'&&b.name.trim()!=='');
 
-  sel.innerHTML='<option value="">— Select a question bank —</option>';
-
   if(!allBanks.length){
     if(statusEl) statusEl.innerHTML='<span style="color:var(--muted);">No banks found. Enter your Quiz Builder username in ⚙ Settings.</span>';
     return;
   }
+
+  // Store cache FIRST so populateBankCheckboxes can read it
+  window._allBanksCache=allBanks;
+
   // Populate checkbox list
   populateBankCheckboxes();
 
-  // Group by program
-  const groups={};
-  allBanks.forEach(b=>{ const k=b.program||'General'; if(!groups[k]) groups[k]=[]; groups[k].push(b); });
-
-  // Show known programs first, then any extra programs from QB (e.g. "Med Assistant")
-  const knownOrder=[...TEACHER_PROGRAMS,'General'];
-  const allPrograms=[...new Set([...knownOrder, ...Object.keys(groups)])];
-
-  allPrograms.forEach(prog=>{
-    if(!groups[prog]) return;
-    const grp=document.createElement('optgroup');
-    grp.label=prog;
-    groups[prog].forEach(b=>{
-      const opt=document.createElement('option');
-      const qCount=b.questions?b.questions.length:0;
-      opt.value=JSON.stringify({id:b.id,source:b._source});
-      opt.textContent=b.name+' ('+qCount+'q)'+(b._source==='ep'?' ★':'');
-      if(JSON.stringify({id:b.id,source:b._source})===cur) opt.selected=true;
-      grp.appendChild(opt);
-    });
-    sel.appendChild(grp);
-  });
-
   if(statusEl) statusEl.textContent=allBanks.length+' bank'+(allBanks.length!==1?'s':'')+' loaded';
-  // Store allBanks for generate function
-  window._allBanksCache=allBanks;
 }
 
 // Stubs for old references
@@ -4147,6 +4504,22 @@ function updateProgDisplay(){
   document.getElementById('sp-program').value=display;
   const dispEl=document.getElementById('sp-prog-display');
   if(dispEl) dispEl.textContent=display?'Selected: '+display:'';
+  if(display) populateTermSelect(display,'sp-term','sp-term-section','sp-term-id');
+}
+
+function populateTermSelect(progName,selId,sectionId,hiddenId){
+  const section=document.getElementById(sectionId);
+  const sel=document.getElementById(selId);
+  if(!section||!sel) return;
+  const baseProgName=progName.replace(/ Morning| Evening/,'');
+  const prog=db_programs.find(p=>p.name===baseProgName||p.name===progName);
+  if(!prog||!db_terms.length){ section.style.display='none'; return; }
+  const terms=db_terms.filter(t=>t.programId===prog.id&&!t.isClosed);
+  if(!terms.length){ section.style.display='none'; return; }
+  sel.innerHTML='<option value="">— Select your term —</option>'+
+    terms.map(t=>`<option value="${t.id}">${t.name}${t.startDate?' ('+new Date(t.startDate).toLocaleDateString()+')':''}</option>`).join('');
+  sel.onchange=()=>{ const h=document.getElementById(hiddenId); if(h) h.value=sel.value; };
+  section.style.display='block';
 }
 // Wire single radio buttons to clear combos
 document.addEventListener('DOMContentLoaded',()=>{
@@ -4187,11 +4560,9 @@ function showStudentConfirm(){
   }
   if(iqErr) iqErr.textContent='';
 
-  // Register student in system
-  registerStudent(name,email,program);
-
-  // Set session values so proceedFromConfirm works
-  ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program;
+  const termId=(document.getElementById('sp-term-id')||{value:''}).value||'';
+  registerStudent(name,email,program,termId);
+  ss._portalName=name; ss._portalEmail=email; ss._portalProgram=program; ss._portalTermId=termId;
   studentProgram=program;
 
   // Clear confirm error if any
@@ -4205,11 +4576,16 @@ function showStudentConfirm(){
 }
 
 // Save new student to Supabase
-async function registerStudent(name,email,program){
+async function registerStudent(name,email,program,termId){
+  const stu={email,name,programs:program,term_id:termId||'',registered_at:new Date().toISOString(),integrity_passed:true};
+  // Add to local cache
+  const idx=db_students.findIndex(s=>s.email===email);
+  const stuObj={email,name,programs:program,termId:termId||'',registeredAt:stu.registered_at,integrityPassed:true};
+  if(idx>=0) db_students[idx]=stuObj; else db_students.push(stuObj);
   await sbFetch('ep_students',{
     method:'POST',
     headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:{email,name,programs:program,registered_at:new Date().toISOString(),integrity_passed:true}
+    body:stu
   }).catch(()=>{});
 }
 
