@@ -1596,6 +1596,13 @@ function getTermExamSource(termId){
   return db.exams;
 }
 
+function termBelongsToProgram(term,progId,prog){
+  if(!term) return false;
+  if(term.programId===progId||term.programId===legacyProgramId(prog)) return true;
+  const matchingProgram=db_programs.find(p=>p.id===term.programId);
+  return !!(matchingProgram&&matchingProgram.name===prog);
+}
+
 function getManualGradesForView(prog){
   const grades=db_manualGrades.filter(g=>studentBelongsToProgram(g.program,prog));
   if(currentTermId) return grades.filter(g=>g.termId===currentTermId);
@@ -1720,7 +1727,7 @@ function renderProgTab(){
   const prog=currentProgram;
   const progId=currentProgId||legacyProgramId(prog);
   const exams=db.exams.filter(e=>{ if(e.isRetakeExam||e.is_trashed) return false; return examBelongsToProgram(e.program,prog); });
-  const terms=db_terms.filter(t=>t.programId===progId);
+  const terms=db_terms.filter(t=>termBelongsToProgram(t,progId,prog));
   const legacySubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog)&&!s.termId);
   const allSubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
   const studentCount=new Set(allSubs.map(s=>s.studentEmail)).size;
@@ -2586,8 +2593,8 @@ function openTermDetail(termId){
   document.getElementById('prog-detail-title').textContent='📅 '+term.name;
 
   // Replace tab bar with term-level tabs
-  const tabBar=document.querySelector('#teacher-program-detail .prog-tab-bar')||document.querySelector('#teacher-program-detail > div:nth-child(2)');
-  const tabContainer=document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
+  const tabContainer=document.querySelector('#teacher-program-detail .prog-tab-bar')||
+    document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
   if(tabContainer){
     tabContainer.innerHTML=`
       <button class="dash-tab" id="ptab-back" onclick="backFromTerm()">← Terms</button>
@@ -2603,7 +2610,8 @@ function backFromTerm(){
   currentTermId=null;
   currentProgTab='terms';
   // Restore program-level tabs
-  const tabContainer=document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
+  const tabContainer=document.querySelector('#teacher-program-detail .prog-tab-bar')||
+    document.getElementById('teacher-program-detail').querySelector('[style*="border-bottom"][style*="display:flex"]');
   if(tabContainer){
     tabContainer.innerHTML=`
       <button class="dash-tab active" id="ptab-exams" onclick="switchProgTab('exams')">📋 Exams</button>
@@ -2662,22 +2670,24 @@ function openAddStudentToTermModal(){
   const term=db_terms.find(t=>t.id===currentTermId);
   if(!term) return;
 
-  // Get students already in THIS term
-  const enrolled=new Set(db_students.filter(s=>s.termId===currentTermId).map(s=>s.email));
+  // Only students with no term assignment can be moved into a new term.
+  const enrolled=new Set(db_students.filter(s=>s.termId===currentTermId).map(s=>s.email.toLowerCase()));
+  const assignedToAnyTerm=new Set(db_students.filter(s=>s.termId).map(s=>s.email.toLowerCase()));
 
-  // Only show students NOT in this term (can be from legacy or other terms)
+  // Only show students not already assigned to any term.
   const candidates=db_students.filter(s=>{
-    if(enrolled.has(s.email)) return false;
-    const base=studentToTeacher(s.programs||'');
-    return base===currentProgram||s.programs===currentProgram;
+    const email=(s.email||'').toLowerCase();
+    if(enrolled.has(email)||assignedToAnyTerm.has(email)) return false;
+    return studentBelongsToProgram(s.programs||'',currentProgram);
   });
 
   // Also get unique students from legacy submissions for this program
   const legacyCandidates=[];
-  const seenEmails=new Set(db_students.map(s=>s.email));
-  db.submissions.filter(s=>studentToTeacher(s.program||'')===currentProgram&&!s.termId&&!enrolled.has(s.studentEmail)).forEach(s=>{
-    if(!seenEmails.has(s.studentEmail)){
-      seenEmails.add(s.studentEmail);
+  const seenEmails=new Set(db_students.map(s=>(s.email||'').toLowerCase()));
+  db.submissions.filter(s=>studentBelongsToProgram(s.program||'',currentProgram)&&!s.termId&&!assignedToAnyTerm.has((s.studentEmail||'').toLowerCase())).forEach(s=>{
+    const email=(s.studentEmail||'').toLowerCase();
+    if(!seenEmails.has(email)){
+      seenEmails.add(email);
       legacyCandidates.push({email:s.studentEmail,name:s.studentName,programs:s.program,termId:'',registeredAt:''});
     }
   });
@@ -2790,6 +2800,10 @@ async function confirmAddStudentsToTerm(){
       s.termId=termId;
       await sbFetch('ep_submissions?id=eq.'+s.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:termId}}).catch(()=>{});
     });
+    db_manualGrades.filter(g=>g.email===email&&!g.termId).forEach(async g=>{
+      g.termId=termId;
+      await sbFetch('ep_manual_grades?id=eq.'+g.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:termId}}).catch(()=>{});
+    });
     count++;
   }
   overlay.remove();
@@ -2803,6 +2817,14 @@ async function removeStudentFromTerm(email){
   const stu=db_students.find(s=>s.email===email);
   if(stu) stu.termId='';
   await sbFetch('ep_students?email=eq.'+encodeURIComponent(email),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
+  db.submissions.filter(s=>s.studentEmail===email&&s.termId===currentTermId).forEach(async s=>{
+    s.termId='';
+    await sbFetch('ep_submissions?id=eq.'+s.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
+  });
+  db_manualGrades.filter(g=>g.email===email&&g.termId===currentTermId).forEach(async g=>{
+    g.termId='';
+    await sbFetch('ep_manual_grades?id=eq.'+g.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{term_id:''}}).catch(()=>{});
+  });
   toast('Student removed from term.');
   renderProgTab();
 }
@@ -2824,11 +2846,46 @@ function renderTermWeights(el){
 
 // ── Legacy data view ──
 function renderLegacyData(el,prog,legacySubs){
+  const legacyStudents=(db_students||[]).filter(s=>!s.termId&&studentBelongsToProgram(s.programs||'',prog));
+  if(!legacySubs.length&&legacyStudents.length){
+    el.innerHTML=`
+      <div style="background:var(--gold-light);border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;">
+        <strong>Legacy data</strong> - These are unassigned students that are not inside any term.
+      </div>
+      <table class="sub-table" style="width:100%;">
+        <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Registered</th></tr></thead>
+        <tbody>${legacyStudents.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>`
+          <tr>
+            <td style="font-weight:500;">${s.name}</td>
+            <td style="font-size:12px;color:var(--muted);">${s.email}</td>
+            <td style="font-size:12px;">${s.programs||''}</td>
+            <td style="font-size:11px;color:var(--muted);">${s.registeredAt?new Date(s.registeredAt).toLocaleDateString():''}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    return;
+  }
   if(!legacySubs.length){ el.innerHTML='<div class="empty"><div class="empty-icon">🗂</div>No legacy data for this program.</div>'; return; }
   el.innerHTML=`
     <div style="background:var(--gold-light);border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;">
       🗂 <strong>Legacy data</strong> — These are submissions and students from before the Terms system was added. Read-only.
     </div>`;
+  if(legacyStudents.length){
+    const studentEl=document.createElement('div');
+    studentEl.style.marginBottom='16px';
+    studentEl.innerHTML=`
+      <h3 style="font-size:15px;margin-bottom:8px;">Unassigned Students</h3>
+      <table class="sub-table" style="width:100%;">
+        <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Registered</th></tr></thead>
+        <tbody>${legacyStudents.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>`
+          <tr>
+            <td style="font-weight:500;">${s.name}</td>
+            <td style="font-size:12px;color:var(--muted);">${s.email}</td>
+            <td style="font-size:12px;">${s.programs||''}</td>
+            <td style="font-size:11px;color:var(--muted);">${s.registeredAt?new Date(s.registeredAt).toLocaleDateString():''}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    el.appendChild(studentEl);
+  }
   const legacyEl=document.createElement('div');
   el.appendChild(legacyEl);
   renderProgSubs(legacyEl, prog, legacySubs);
