@@ -1575,6 +1575,7 @@ let lastLocalEditAt = 0;
 // In-memory grade data (synced to Supabase)
 let db_weights   = {}; // { program: [{category,label,weight,enabled}] }
 let db_manualGrades = []; // [{id,email,name,program,category,label,grade,maxGrade,date}]
+let duplicateCache = {key:'',groups:[],at:0};
 
 const GRADE_CATEGORIES = [
   {key:'exam',     label:'Exam',          icon:'📝'},
@@ -1693,17 +1694,39 @@ function nameSimilarity(a,b){
 }
 
 function getDuplicateStudentGroups(prog){
+  const cacheKey=[
+    prog,
+    (db_students||[]).length,
+    (db.submissions||[]).length,
+    (db_manualGrades||[]).length,
+    (db_students||[]).map(s=>emailKey(s.email)+':'+nameKey(s.name)+':'+(s.termId||'')).sort().join(';')
+  ].join('||');
+  if(duplicateCache.key===cacheKey && Date.now()-duplicateCache.at<15000) return duplicateCache.groups;
+
   const records=[];
+  const recordMap=new Map();
   const add=(email,name,program,source,termId,id)=>{
     if(!email||!studentBelongsToProgram(program||'',prog)) return;
-    records.push({
+    const record={
       email:String(email).trim(),
       name:String(name||'').trim(),
       program:program||'',
       source,
       termId:termId||'',
-      id:id||''
-    });
+      id:id||'',
+      count:1
+    };
+    // Keep duplicate detection fast by comparing unique student identities,
+    // not every exam submission row for the same person.
+    const sig=[emailKey(record.email),nameKey(record.name),record.program,record.termId].join('|');
+    if(recordMap.has(sig)){
+      const existing=recordMap.get(sig);
+      existing.count++;
+      if(!existing.source.includes(source)) existing.source+=' + '+source;
+      return;
+    }
+    recordMap.set(sig,record);
+    records.push(record);
   };
   (db_students||[]).forEach(s=>add(s.email,s.name,s.programs,'Student registry',s.termId,s.email));
   db.submissions.forEach(s=>add(s.studentEmail,s.studentName,s.program,'Submission',s.termId,s.id));
@@ -1740,7 +1763,7 @@ function getDuplicateStudentGroups(prog){
   }
 
   const seen=new Set();
-  return [...byKey.values()].filter(g=>{
+  const groups=[...byKey.values()].filter(g=>{
     const distinctEmails=new Set([...g.emails].map(e=>e.toLowerCase()));
     const distinctNames=new Set([...g.names].map(n=>nameKey(n)));
     const sourceIds=new Set(g.records.map(r=>r.source+':'+r.id));
@@ -1754,6 +1777,8 @@ function getDuplicateStudentGroups(prog){
     seen.add(sig);
     return true;
   });
+  duplicateCache={key:cacheKey,groups,at:Date.now()};
+  return groups;
 }
 
 function showDuplicateBanner(el,prog){
@@ -1770,12 +1795,91 @@ function showDuplicateBanner(el,prog){
   el.prepend(banner);
 }
 
-async function mergeDuplicateStudent(emailKey,prog){
+function getDuplicateGradeConflicts(group){
+  if(!group) return [];
+  const emails=[...group.emails].map(emailKey);
+  const emailSet=new Set(emails);
+  const conflicts=[];
+  const subMap=new Map();
+  db.submissions.forEach(s=>{
+    if(!emailSet.has(emailKey(s.studentEmail))) return;
+    const key='submission|'+(s.termId||'')+'|'+(s.examId||'')+'|'+(s.examTitle||'');
+    if(!subMap.has(key)) subMap.set(key,[]);
+    subMap.get(key).push(s);
+  });
+  subMap.forEach(items=>{
+    if(items.length>1) conflicts.push({type:'submission',label:items[0].examTitle||db.exams.find(e=>e.id===items[0].examId)?.title||'Exam submission',items});
+  });
+
+  const manualMap=new Map();
+  db_manualGrades.forEach(g=>{
+    if(!emailSet.has(emailKey(g.email))) return;
+    const key='manual|'+(g.termId||'')+'|'+(g.category||'')+'|'+(g.label||'');
+    if(!manualMap.has(key)) manualMap.set(key,[]);
+    manualMap.get(key).push(g);
+  });
+  manualMap.forEach(items=>{
+    if(items.length>1) conflicts.push({type:'manual',label:(items[0].label||items[0].category||'Manual grade'),items});
+  });
+  return conflicts;
+}
+
+function pickGradeRecord(items,policy,type){
+  const list=[...items];
+  if(policy==='oldest') return list.sort((a,b)=>new Date(a.date||a.registeredAt||0)-new Date(b.date||b.registeredAt||0))[0];
+  if(policy==='latest') return list.sort((a,b)=>new Date(b.date||b.registeredAt||0)-new Date(a.date||a.registeredAt||0))[0];
+  // highest is safest for student by default
+  return list.sort((a,b)=>{
+    const ap=type==='manual'?Math.round((a.grade||0)/(a.maxGrade||100)*100):(a.percentage||0);
+    const bp=type==='manual'?Math.round((b.grade||0)/(b.maxGrade||100)*100):(b.percentage||0);
+    if(bp!==ap) return bp-ap;
+    return new Date(b.date||0)-new Date(a.date||0);
+  })[0];
+}
+
+async function resolveDuplicateGradeConflicts(group,canonicalEmail,canonicalName,policy){
+  const conflicts=getDuplicateGradeConflicts(group);
+  const deleteSubmissionIds=[];
+  const deleteManualIds=[];
+  for(const c of conflicts){
+    const keep=pickGradeRecord(c.items,policy,c.type);
+    if(c.type==='submission'){
+      c.items.forEach(s=>{
+        if(s.id===keep.id) return;
+        deleteSubmissionIds.push(s.id);
+        db.submissions=db.submissions.filter(row=>row.id!==s.id);
+      });
+      Object.assign(keep,{studentEmail:canonicalEmail,studentName:canonicalName});
+      await syncSubmission(keep).catch(()=>{});
+    } else {
+      c.items.forEach(g=>{
+        if(g.id===keep.id) return;
+        deleteManualIds.push(g.id);
+        db_manualGrades=db_manualGrades.filter(row=>row.id!==g.id);
+      });
+      Object.assign(keep,{email:canonicalEmail,name:canonicalName});
+      await sbFetch('ep_manual_grades?id=eq.'+keep.id,{method:'PATCH',headers:{'Prefer':'return=minimal'},body:{email:canonicalEmail,name:canonicalName,program:keep.program,grade:keep.grade,max_grade:keep.maxGrade,date:keep.date}}).catch(()=>{});
+    }
+  }
+  for(const id of deleteSubmissionIds){
+    await sbFetch('ep_submissions?id=eq.'+id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  }
+  for(const id of deleteManualIds){
+    await sbFetch('ep_manual_grades?id=eq.'+id,{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
+  }
+}
+
+async function mergeDuplicateStudent(emailKey,prog,gradePolicy){
   const group=getDuplicateStudentGroups(prog).find(g=>g.key===emailKey);
   if(!group){ toast('Duplicate group not found.'); return; }
   const canonicalEmail=[...group.emails].sort((a,b)=>a.length-b.length||a.localeCompare(b))[0];
   const canonicalName=[...group.names].sort((a,b)=>b.length-a.length||a.localeCompare(b))[0]||canonicalEmail;
-  if(!confirm('Merge duplicate records for '+canonicalName+' into '+canonicalEmail+'?')) return;
+  const conflicts=getDuplicateGradeConflicts(group);
+  const policy=gradePolicy || (document.getElementById('duplicate-grade-policy')?.value) || 'highest';
+  const policyLabel={highest:'highest grade',latest:'latest grade',oldest:'oldest grade'}[policy]||policy;
+  const msg='Merge duplicate records for '+canonicalName+' into '+canonicalEmail+'?'+
+    (conflicts.length?'\n\nRepeated grades found: '+conflicts.length+'. The merge will keep the '+policyLabel+'.':'');
+  if(!confirm(msg)) return;
   const oldEmails=[...group.emails];
   const changedExams=[];
 
@@ -1805,6 +1909,7 @@ async function mergeDuplicateStudent(emailKey,prog){
     if(oldEmail.toLowerCase()!==canonicalEmail) await sbFetch('ep_students?email=eq.'+encodeURIComponent(oldEmail),{method:'DELETE',headers:{'Prefer':'return=minimal'}}).catch(()=>{});
   }
   await sbFetch('ep_students',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:{email:canonicalEmail,name:canonicalName,programs:(existing&&existing.programs)||prog,term_id:(existing&&existing.termId)||'',registered_at:(existing&&existing.registeredAt)||new Date().toISOString(),integrity_passed:existing?!!existing.integrityPassed:true}}).catch(()=>{});
+  await resolveDuplicateGradeConflicts(group,canonicalEmail,canonicalName,policy);
   await Promise.all([...new Set(changedExams)].map(exam=>syncExam(exam)));
   toast('Duplicate student records merged.');
   const overlay=document.getElementById('duplicate-review-overlay');
@@ -1827,8 +1932,26 @@ function openDuplicateReviewModal(groupKey,prog){
       <td style="font-size:12px;color:var(--muted);">${escHTML(r.email)}</td>
       <td>${escHTML(r.program||'')}</td>
       <td>${escHTML(getTermName(r.termId))}</td>
-      <td>${escHTML(r.source)}</td>
+      <td>${escHTML(r.source)}${r.count>1?' ('+r.count+' records)':''}</td>
     </tr>`).join('');
+  const conflicts=getDuplicateGradeConflicts(selected);
+  const conflictHTML=conflicts.length?`
+    <div style="background:var(--gold-light);border:1px solid #f0d080;border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Repeated grades found</div>
+      <div style="font-size:12px;color:#8a6000;margin-bottom:10px;">Choose which grade should be kept when the same exam/manual grade appears more than once for this student.</div>
+      <select id="duplicate-grade-policy" style="padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;background:var(--surface);font-size:13px;margin-bottom:10px;">
+        <option value="highest">Keep highest grade</option>
+        <option value="latest">Keep latest grade/date</option>
+        <option value="oldest">Keep oldest grade/date</option>
+      </select>
+      <div style="font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:4px;">
+        ${conflicts.slice(0,6).map(c=>`<div>${escHTML(c.label)}: ${c.items.map(item=>{
+          const pct=c.type==='manual'?Math.round((item.grade||0)/(item.maxGrade||100)*100):(item.percentage||0);
+          return escHTML((item.name||item.studentName||item.email||item.studentEmail||'Record')+' '+pct+'%');
+        }).join(' vs ')}</div>`).join('')}
+        ${conflicts.length>6?`<div>+ ${conflicts.length-6} more repeated grade group${conflicts.length-6!==1?'s':''}</div>`:''}
+      </div>
+    </div>`:'';
   const overlay=document.createElement('div');
   overlay.id='duplicate-review-overlay';
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2200;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -1846,12 +1969,13 @@ function openDuplicateReviewModal(groupKey,prog){
         <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Term</th><th>Found In</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      ${conflictHTML}
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--muted);margin-bottom:16px;">
         Merge will keep one student account, move matching submissions/manual grades to that account, and update exam attempt records. Similar-name matches are only suggestions, so review the names and emails carefully first.
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;">
         <button class="btn btn-outline" onclick="document.getElementById('duplicate-review-overlay').remove()">Cancel</button>
-        <button class="btn btn-primary" onclick="mergeDuplicateStudent('${jsString(selected.key)}','${jsString(prog)}')">Merge These Records</button>
+        <button class="btn btn-primary" onclick="mergeDuplicateStudent('${jsString(selected.key)}','${jsString(prog)}',document.getElementById('duplicate-grade-policy')?.value)">Merge These Records</button>
       </div>
     </div>`;
   const old=document.getElementById('duplicate-review-overlay');
