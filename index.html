@@ -1647,7 +1647,9 @@ function backToPrograms(){
 
 function switchProgTab(tab){
   currentProgTab=tab;
-  ['exams','subs','grades','settings'].forEach(t=>{
+  // Update active state on whichever buttons exist
+  ['exams','subs','grades','settings','terms','legacy',
+   'term-subs','term-students','term-grades','term-weights'].forEach(t=>{
     const btn=document.getElementById('ptab-'+t);
     if(btn) btn.classList.toggle('active',t===tab);
   });
@@ -1659,24 +1661,27 @@ function renderProgTab(){
   if(!el||!currentProgram) return;
 
   const prog=currentProgram;
-  // For combo program, show MA + EKG + Phlebotomy exams
-  const exams=db.exams.filter(e=>{
-    if(e.isRetakeExam||e.is_trashed) return false;
-    return examBelongsToProgram(e.program,prog);
-  });
-  const subs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
-  const studentEmails=new Set(subs.map(s=>s.studentEmail.toLowerCase()));
-  (db_students||[]).filter(s=>studentBelongsToProgram(s.programs,prog))
-    .forEach(s=>studentEmails.add(s.email.toLowerCase()));
-  const studentCount=studentEmails.size;
+  const progId=currentProgId||('legacy-'+prog.replace(/\W+/g,'-').toLowerCase());
+  const exams=db.exams.filter(e=>{ if(e.isRetakeExam||e.is_trashed) return false; return examBelongsToProgram(e.program,prog); });
+  const terms=db_terms.filter(t=>t.programId===progId);
+  const legacySubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog)&&!s.termId);
+  const allSubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog));
+  const studentCount=new Set(allSubs.map(s=>s.studentEmail)).size;
 
-  // Update stats
   const statsEl=document.getElementById('prog-detail-stats');
-  if(statsEl) statsEl.textContent=`${exams.length} exams · ${studentCount} students · ${subs.length} submissions`;
+  if(statsEl) statsEl.textContent=`${exams.length} exams · ${terms.length} terms · ${studentCount} students`;
 
-  if(currentProgTab==='exams')   renderProgExams(el,prog,exams);
-  else if(currentProgTab==='subs')    renderProgSubs(el,prog,subs);
-  else if(currentProgTab==='grades')  renderProgGrades(el,prog,subs);
+  if(currentProgTab==='exams')         renderProgExams(el,prog,exams);
+  else if(currentProgTab==='terms')    renderTermsList(el,prog,progId,terms);
+  else if(currentProgTab==='legacy')   renderLegacyData(el,prog,legacySubs);
+  // Term-level tabs
+  else if(currentProgTab==='term-subs')     renderTermSubs(el);
+  else if(currentProgTab==='term-students') renderTermStudents(el);
+  else if(currentProgTab==='term-grades')   renderTermGrades(el);
+  else if(currentProgTab==='term-weights')  renderTermWeights(el);
+  // Legacy fallback for old tabs
+  else if(currentProgTab==='subs')     renderProgSubs(el,prog,legacySubs);
+  else if(currentProgTab==='grades')   renderProgGrades(el,prog,legacySubs);
   else if(currentProgTab==='settings') renderProgWeightSettings(el,prog);
 }
 
@@ -3779,15 +3784,32 @@ function populateBankCheckboxes(){
     container.innerHTML='<div style="padding:10px 14px;font-size:12px;color:var(--muted);">No banks loaded. Click ↺ Refresh.</div>';
     return;
   }
-  container.innerHTML=allBanks.map(b=>{
-    const val=JSON.stringify({id:b.id,source:b._source||'ep'});
-    const checked=_selectedBanks.some(s=>s.id===b.id);
-    const qCount=(b.questions||[]).length;
-    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;font-size:13px;hover:background:var(--bg);" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
-      <input type="checkbox" value='${val}' ${checked?'checked':''} onchange="handleBankCheckbox(this)" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;"/>
-      <span><strong>${b.name}</strong> <span style="color:var(--muted);font-size:11px;">(${qCount} q${b._source==='qb'?' · QB':''})</span></span>
-    </label>`;
-  }).join('');
+
+  // Group by program like before
+  const groups={};
+  allBanks.forEach(b=>{
+    const k=b.program||'General';
+    if(!groups[k]) groups[k]=[];
+    groups[k].push(b);
+  });
+  const knownOrder=[...getTeacherPrograms(),'General'];
+  const allPrograms=[...new Set([...knownOrder,...Object.keys(groups)])];
+
+  let html='';
+  allPrograms.forEach(prog=>{
+    if(!groups[prog]) return;
+    html+=`<div style="padding:6px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--bg);">${prog}</div>`;
+    groups[prog].forEach(b=>{
+      const val=JSON.stringify({id:b.id,source:b._source||'ep'});
+      const checked=_selectedBanks.some(s=>s.id===b.id);
+      const qCount=(b.questions||[]).length;
+      html+=`<label style="display:flex;align-items:center;gap:10px;padding:7px 14px;cursor:pointer;" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
+        <input type="checkbox" value='${val}' ${checked?'checked':''} onchange="handleBankCheckbox(this)" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;"/>
+        <span><strong>${b.name}</strong> <span style="color:var(--muted);font-size:11px;">(${qCount}q${b._source==='qb'?' · QB':''})</span></span>
+      </label>`;
+    });
+  });
+  container.innerHTML=html;
 }
 
 function handleBankCheckbox(cb){
@@ -3803,13 +3825,7 @@ function handleBankCheckbox(cb){
     _selectedBanks=_selectedBanks.filter(b=>b.id!==val.id);
   }
   updateSelectedBankChips();
-  // Auto-popup balance question when 2+ banks selected
-  if(_selectedBanks.length>=2){
-    const balCheck=document.getElementById('qb-balance-chapters');
-    if(balCheck && !balCheck.checked){
-      showBalancePopup();
-    }
-  }
+  // No popup here — balance question asked at Generate time
 }
 
 function updateSelectedBankChips(){
@@ -3830,7 +3846,7 @@ function removeSelectedBank(id){
   populateBankCheckboxes();
 }
 
-function showBalancePopup(){
+function showBalancePopup(onDecided){
   const overlay=document.createElement('div');
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2000;display:flex;align-items:center;justify-content:center;';
   overlay.innerHTML=`
@@ -3852,10 +3868,12 @@ function showBalancePopup(){
   overlay.querySelector('#bal-yes').onclick=()=>{
     document.getElementById('qb-balance-chapters').checked=true;
     document.body.removeChild(overlay);
+    if(onDecided) onDecided();
   };
   overlay.querySelector('#bal-no').onclick=()=>{
     document.getElementById('qb-balance-chapters').checked=false;
     document.body.removeChild(overlay);
+    if(onDecided) onDecided();
   };
 }
 
@@ -3868,6 +3886,16 @@ function qbGenerateExam(){
 
   if(!title){  status.innerHTML='<span style="color:var(--accent);">⚠ Please enter an exam title.</span>'; return; }
   if(!program){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a program.</span>'; return; }
+
+  // If 2+ banks selected and balance not yet decided, ask first
+  if(_selectedBanks.length>=2){
+    const balCheck=document.getElementById('qb-balance-chapters');
+    if(!balCheck._balanceDecided){
+      showBalancePopup(()=>{ balCheck._balanceDecided=true; qbGenerateExam(); });
+      return;
+    }
+    balCheck._balanceDecided=false; // reset for next time
+  }
 
   const bankVal = document.getElementById('qb-bank-select')?.value;
   // Support both old single-select and new multi-select
