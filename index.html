@@ -328,11 +328,15 @@ textarea{resize:vertical;}
     <div style="background:var(--surface);border-bottom:1px solid var(--border);padding:14px 20px;flex-shrink:0;">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px;">📋 Generate an Exam from a Bank</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="display:flex;flex-direction:column;gap:4px;flex:2;min-width:160px;">
-          <label style="font-size:11px;font-weight:600;color:var(--muted);">BANK</label>
-          <select id="qb-bank-select" style="font-size:13px;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);">
-            <option value="">— Select a question bank —</option>
-          </select>
+        <div style="display:flex;flex-direction:column;gap:4px;flex:2;min-width:200px;">
+          <label style="font-size:11px;font-weight:600;color:var(--muted);">BANKS (select one or more)</label>
+          <div id="qb-selected-banks" style="display:flex;flex-wrap:wrap;gap:6px;min-height:28px;padding:2px 0;"></div>
+          <div style="position:relative;">
+            <button type="button" id="qb-bank-toggle" onclick="toggleBankDropdown()" style="width:100%;text-align:left;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;">+ Select question banks ▾</button>
+            <div id="qb-bank-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:50;max-height:200px;overflow-y:auto;">
+              <div id="qb-bank-checkboxes" style="padding:4px 0;"></div>
+            </div>
+          </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;flex:2;min-width:160px;">
           <label style="font-size:11px;font-weight:600;color:var(--muted);">EXAM TITLE</label>
@@ -360,6 +364,7 @@ textarea{resize:vertical;}
             <option value="review">🔍 Review</option>
             <option value="final">🎓 Final Exam</option>
             <option value="workbook">📚 Workbook</option>
+            <option value="practice">🏃 Practice Exam</option>
           </select>
         </div>
         <button class="btn btn-primary" onclick="qbGenerateExam()" style="white-space:nowrap;align-self:flex-end;">✓ Generate Exam</button>
@@ -368,7 +373,7 @@ textarea{resize:vertical;}
       <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 14px;background:var(--bg);border-radius:8px;">
         <input type="checkbox" id="qb-balance-chapters" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent);"/>
         <label for="qb-balance-chapters" style="font-size:13px;cursor:pointer;">
-          <strong>Balance across chapters</strong> — picks proportionally from each chapter (recommended for finals &amp; mocks)
+          <strong>Balance across banks/chapters</strong> — picks proportionally from each selected bank (recommended for finals &amp; mocks)
         </label>
       </div>
       <div id="qb-gen-status" style="margin-top:8px;font-size:12px;"></div>
@@ -389,8 +394,6 @@ textarea{resize:vertical;}
     </div>
   </div>
 </div>
-
-
 <!-- ═══ STUDENT PORTAL — New or Returning ═══ -->
 <div id="screen-student-portal" class="screen" style="align-items:center;justify-content:center;padding:40px 20px;">
   <div style="max-width:460px;width:100%;">
@@ -762,6 +765,7 @@ textarea{resize:vertical;}
       <select id="mg-category">
         <option value="exam">Exam</option>
         <option value="review">Review</option>
+        <option value="practice">Practice Exam</option>
         <option value="final">Final Exam</option>
         <option value="workbook">Workbook</option>
         <option value="skills">Skills</option>
@@ -1513,11 +1517,12 @@ let db_weights   = {}; // { program: [{category,label,weight,enabled}] }
 let db_manualGrades = []; // [{id,email,name,program,category,label,grade,maxGrade,date}]
 
 const GRADE_CATEGORIES = [
-  {key:'exam',    label:'Exam',       icon:'📝'},
-  {key:'review',  label:'Review',     icon:'🔍'},
-  {key:'final',   label:'Final Exam', icon:'🎓'},
-  {key:'workbook',label:'Workbook',   icon:'📚'},
-  {key:'skills',  label:'Skills',     icon:'🏋'},
+  {key:'exam',     label:'Exam',          icon:'📝'},
+  {key:'review',   label:'Review',        icon:'🔍'},
+  {key:'practice', label:'Practice Exam', icon:'🏃'},
+  {key:'final',    label:'Final Exam',    icon:'🎓'},
+  {key:'workbook', label:'Workbook',      icon:'📚'},
+  {key:'skills',   label:'Skills',        icon:'🏋'},
 ];
 
 function getWeightsForProg(prog){
@@ -3361,6 +3366,116 @@ function retakeNewExam(){
 
 // Intercept qbGenerateExam to handle retake mode
 const _origQbGenerate = null;
+// ── Multi-bank selection ──
+let _selectedBanks = []; // [{id, name, source, questions}]
+
+function toggleBankDropdown(){
+  const dd=document.getElementById('qb-bank-dropdown');
+  if(!dd) return;
+  const isOpen=dd.style.display!=='none';
+  dd.style.display=isOpen?'none':'block';
+  if(!isOpen) populateBankCheckboxes();
+  // Close when clicking outside
+  if(!isOpen){
+    setTimeout(()=>{
+      document.addEventListener('click', function closeDd(e){
+        if(!e.target.closest('#qb-bank-dropdown') && !e.target.closest('#qb-bank-toggle')){
+          dd.style.display='none';
+          document.removeEventListener('click',closeDd);
+        }
+      });
+    },10);
+  }
+}
+
+function populateBankCheckboxes(){
+  const container=document.getElementById('qb-bank-checkboxes');
+  if(!container) return;
+  const allBanks=window._allBanksCache||[];
+  if(!allBanks.length){
+    container.innerHTML='<div style="padding:10px 14px;font-size:12px;color:var(--muted);">No banks loaded. Click ↺ Refresh.</div>';
+    return;
+  }
+  container.innerHTML=allBanks.map(b=>{
+    const val=JSON.stringify({id:b.id,source:b._source||'ep'});
+    const checked=_selectedBanks.some(s=>s.id===b.id);
+    const qCount=(b.questions||[]).length;
+    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;font-size:13px;hover:background:var(--bg);" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''">
+      <input type="checkbox" value='${val}' ${checked?'checked':''} onchange="handleBankCheckbox(this)" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;"/>
+      <span><strong>${b.name}</strong> <span style="color:var(--muted);font-size:11px;">(${qCount} q${b._source==='qb'?' · QB':''})</span></span>
+    </label>`;
+  }).join('');
+}
+
+function handleBankCheckbox(cb){
+  const val=JSON.parse(cb.value);
+  const allBanks=window._allBanksCache||[];
+  const bank=allBanks.find(b=>b.id===val.id);
+  if(!bank) return;
+  if(cb.checked){
+    if(!_selectedBanks.some(b=>b.id===val.id)){
+      _selectedBanks.push({...bank,_source:val.source});
+    }
+  } else {
+    _selectedBanks=_selectedBanks.filter(b=>b.id!==val.id);
+  }
+  updateSelectedBankChips();
+  // Auto-popup balance question when 2+ banks selected
+  if(_selectedBanks.length>=2){
+    const balCheck=document.getElementById('qb-balance-chapters');
+    if(balCheck && !balCheck.checked){
+      showBalancePopup();
+    }
+  }
+}
+
+function updateSelectedBankChips(){
+  const container=document.getElementById('qb-selected-banks');
+  if(!container) return;
+  container.innerHTML=_selectedBanks.map(b=>`
+    <span style="display:inline-flex;align-items:center;gap:5px;background:var(--accent-light);color:var(--accent);border:1px solid #f0caba;border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;">
+      ${b.name}
+      <button onclick="removeSelectedBank('${b.id}')" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:14px;padding:0;line-height:1;">×</button>
+    </span>`).join('');
+  const toggle=document.getElementById('qb-bank-toggle');
+  if(toggle) toggle.textContent=_selectedBanks.length?'+ Add more banks ▾':'+ Select question banks ▾';
+}
+
+function removeSelectedBank(id){
+  _selectedBanks=_selectedBanks.filter(b=>b.id!==id);
+  updateSelectedBankChips();
+  populateBankCheckboxes();
+}
+
+function showBalancePopup(){
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2000;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML=`
+    <div style="background:var(--surface);border-radius:16px;padding:28px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2);">
+      <h3 style="font-size:18px;margin-bottom:8px;">📊 Multiple Banks Selected</h3>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:20px;">You selected <strong>${_selectedBanks.length} banks</strong>. How would you like to pick questions?</p>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button id="bal-yes" class="btn btn-primary" style="text-align:left;padding:14px 16px;">
+          ⚖ Balance across banks
+          <div style="font-size:11px;font-weight:400;opacity:.85;margin-top:3px;">Picks proportionally from each bank based on size</div>
+        </button>
+        <button id="bal-no" class="btn btn-outline" style="text-align:left;padding:14px 16px;">
+          🎲 Combine and pick randomly
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">Pools all questions together and picks randomly</div>
+        </button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#bal-yes').onclick=()=>{
+    document.getElementById('qb-balance-chapters').checked=true;
+    document.body.removeChild(overlay);
+  };
+  overlay.querySelector('#bal-no').onclick=()=>{
+    document.getElementById('qb-balance-chapters').checked=false;
+    document.body.removeChild(overlay);
+  };
+}
+
 function qbGenerateExam(){
   const title   = document.getElementById('qb-exam-title').value.trim();
   const numQ    = parseInt(document.getElementById('qb-num-q').value)||20;
@@ -3371,20 +3486,21 @@ function qbGenerateExam(){
   if(!title){  status.innerHTML='<span style="color:var(--accent);">⚠ Please enter an exam title.</span>'; return; }
   if(!program){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a program.</span>'; return; }
 
-  const bankVal = document.getElementById('qb-bank-select').value;
-  if(!bankVal){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select a question bank.</span>'; return; }
+  const bankVal = document.getElementById('qb-bank-select')?.value;
+  // Support both old single-select and new multi-select
+  const banksToUse = _selectedBanks.length>0 ? _selectedBanks : (()=>{
+    if(!bankVal){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select at least one question bank.</span>'; return null; }
+    const allBanks=window._allBanksCache||[...db_banks.map(b=>({...b,_source:'ep'}))];
+    let bankId,bankSource;
+    try{ const parsed=JSON.parse(bankVal); bankId=parsed.id; bankSource=parsed.source; } catch(e){ bankId=bankVal; bankSource='ep'; }
+    const bank=allBanks.find(b=>b.id===bankId);
+    return bank?[bank]:null;
+  })();
+  if(!banksToUse){ return; }
+  if(!banksToUse.length){ status.innerHTML='<span style="color:var(--accent);">⚠ Please select at least one question bank.</span>'; return; }
 
-  // Parse bank selection (contains id + source)
-  let bankId, bankSource;
-  try{ const parsed=JSON.parse(bankVal); bankId=parsed.id; bankSource=parsed.source; }
-  catch(e){ bankId=bankVal; bankSource='ep'; }
-
-  // Find bank from cache
-  const allBanks = window._allBanksCache || [...db_banks.map(b=>({...b,_source:'ep'}))];
-  const bank = allBanks.find(b=>b.id===bankId);
-  if(!bank){ status.innerHTML='<span style="color:var(--accent);">⚠ Bank not found. Click ↺ Refresh.</span>'; return; }
-
-  const allQs = bank.questions || [];
+  // Combine all questions from selected banks
+  const allQs = banksToUse.flatMap(b=>(b.questions||[]).map(q=>({...q,_bankName:b.name})));
   if(!allQs.length){ status.innerHTML='<span style="color:var(--accent);">⚠ This bank has no questions yet.</span>'; return; }
 
   const balanceChapters = document.getElementById('qb-balance-chapters')?.checked;
@@ -3717,6 +3833,8 @@ async function qbRefreshBridge(){
     if(statusEl) statusEl.innerHTML='<span style="color:var(--muted);">No banks found. Enter your Quiz Builder username in ⚙ Settings.</span>';
     return;
   }
+  // Populate checkbox list
+  populateBankCheckboxes();
 
   // Group by program
   const groups={};
