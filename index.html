@@ -1144,6 +1144,7 @@ let db = {exams:[], submissions:[], settings:{}, pin:'123456', trash:[]};
 let db_students    = []; // registered students
 let db_programs    = []; // dynamic programs from ep_programs
 let db_terms       = []; // terms from ep_terms
+let pendingSubmissionSync = new Set();
 let currentTermId  = null; // selected term in teacher view
 let dbLoaded = false;
 
@@ -1253,20 +1254,57 @@ async function syncExam(exam){
 
 // Sync a single submission to Supabase — uses upsert
 async function syncSubmission(sub){
-  await sbFetch('ep_submissions', {
-    method:'POST',
-    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:{
-      id:sub.id, exam_id:sub.examId, exam_title:sub.examTitle||'',
-      term_id:sub.termId||'',
-      student_name:sub.studentName, student_email:sub.studentEmail,
-      program:sub.program, score:sub.score, total:sub.total,
-      percentage:sub.percentage, detail:sub.detail||[],
-      attempts_used:sub.attemptsUsed||1, attempts_max:sub.attemptsMax||3,
-      attempts_left:sub.attemptsLeft||0,
-      date_taken:sub.date||new Date().toISOString()
+  const fullBody={
+    id:sub.id, exam_id:sub.examId, exam_title:sub.examTitle||'',
+    term_id:sub.termId||'',
+    student_name:sub.studentName, student_email:sub.studentEmail,
+    program:sub.program, score:sub.score, total:sub.total,
+    percentage:sub.percentage, detail:sub.detail||[],
+    attempts_used:sub.attemptsUsed||1, attempts_max:sub.attemptsMax||3,
+    attempts_left:sub.attemptsLeft||0,
+    date_taken:sub.date||new Date().toISOString()
+  };
+  const baseBody={
+    id:sub.id, exam_id:sub.examId, exam_title:sub.examTitle||'',
+    student_name:sub.studentName, student_email:sub.studentEmail,
+    program:sub.program, score:sub.score, total:sub.total,
+    percentage:sub.percentage, detail:sub.detail||[],
+    attempts_used:sub.attemptsUsed||1, attempts_max:sub.attemptsMax||3,
+    attempts_left:sub.attemptsLeft||0,
+    date_taken:sub.date||new Date().toISOString()
+  };
+  try{
+    await sbFetch('ep_submissions', {
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:fullBody
+    });
+    pendingSubmissionSync.delete(sub.id);
+    delete sub._pendingSync;
+    delete sub._syncError;
+    delete sub._syncFallback;
+    return {ok:true,fallback:false};
+  }catch(primaryErr){
+    console.warn('Submission sync full payload failed, retrying compatibility payload:',primaryErr);
+    try{
+      await sbFetch('ep_submissions', {
+        method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+        body:baseBody
+      });
+      pendingSubmissionSync.delete(sub.id);
+      sub._syncFallback=true;
+      delete sub._pendingSync;
+      delete sub._syncError;
+      return {ok:true,fallback:true,error:primaryErr};
+    }catch(fallbackErr){
+      console.warn('Submission sync error:',fallbackErr);
+      pendingSubmissionSync.add(sub.id);
+      sub._pendingSync=true;
+      sub._syncError=fallbackErr.message||String(fallbackErr);
+      return {ok:false,error:fallbackErr};
     }
-  }).catch(e=>console.warn('Submission sync error:',e));
+  }
 }
 
 // Delete exam from Supabase
@@ -5132,7 +5170,7 @@ async function syncFromSupabase(){
     // Re-sync any local-only exams to Supabase
     localOnly.forEach(e=>syncExam(e).catch(()=>{}));
 
-    db.submissions=(subs||[]).map(s=>({
+    const remoteSubmissions=(subs||[]).map(s=>({
       id:s.id, examId:s.exam_id, examTitle:s.exam_title||'',
       studentName:s.student_name, studentEmail:s.student_email,
       program:s.program, score:s.score, total:s.total,
@@ -5143,6 +5181,9 @@ async function syncFromSupabase(){
       attemptsUsed:s.attempts_used||1, attemptsMax:s.attempts_max||3,
       attemptsLeft:s.attempts_left||0, date:s.date_taken
     }));
+    const remoteSubmissionIds=new Set(remoteSubmissions.map(s=>s.id));
+    const localPending=db.submissions.filter(s=>(s._pendingSync||pendingSubmissionSync.has(s.id))&&!remoteSubmissionIds.has(s.id));
+    db.submissions=[...remoteSubmissions,...localPending];
     db_students=(students||[]).map(s=>({
       email:s.email, name:s.name, programs:s.programs||'',
       termId:s.term_id||'',
@@ -5548,13 +5589,17 @@ async function refreshStudentExamList(){
     loadingDiv.style.cssText='position:fixed;top:70px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--muted);z-index:100;box-shadow:0 4px 12px rgba(0,0,0,.1);';
     loadingDiv.textContent='↺ Refreshing...';
     document.body.appendChild(loadingDiv);
-    // Reload data silently
-    await syncFromSupabase().catch(()=>{});
-    document.body.removeChild(loadingDiv);
+    try{
+      // Reload data silently
+      await syncFromSupabase().catch(()=>{});
+    }finally{
+      if(loadingDiv.parentNode) loadingDiv.parentNode.removeChild(loadingDiv);
+    }
   }
   // Re-render keeping the current active tab
   const currentTab=window._studentActiveTab||'todo';
   _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+  showScreen('screen-student-exams');
   // Restore the tab they were on
   window._studentActiveTab=currentTab;
   switchStudentTab(currentTab);
@@ -6004,14 +6049,14 @@ function nextQ(){
   if(isLast){
     const unanswered=total-Object.keys(ss.answers).length;
     if(unanswered>0&&!confirm(`You have ${unanswered} unanswered question${unanswered>1?'s':''}. Submit anyway?`))return;
-    submitExam();
+    submitExam().catch(err=>{ console.error('Submit failed:',err); toast('Could not finish saving the exam. Please tell your teacher before closing this page.'); });
   } else { ss.curQ++;renderQuestion(); }
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  SUBMIT & GRADE
 // ═══════════════════════════════════════════════════════════════
-function submitExam(){
+async function submitExam(){
   const exam=db.exams.find(e=>e.id===ss.examId);
   let score=0; const detail=[];
 
@@ -6073,10 +6118,18 @@ function submitExam(){
     db.exams=db.exams.filter(e=>e.id!==exam.id);
   }
 
-  saveDB(); syncSubmission(sub).catch(()=>{});
+  saveDB();
+  const subSync=await syncSubmission(sub);
   // Also sync exam (attempt count changed)
   syncExam(exam).catch(()=>{});
   showResults(sub,exam,{attemptsLeft,isNewBest,thisScore:pct,thisCorrect:score,thisDetail:detail});
+  if(!subSync.ok){
+    setSubmissionSaveStatus('⚠ Your score is visible here, but it could not be saved to the teacher dashboard yet. Please screenshot this result and tell your teacher.','error');
+  } else if(subSync.fallback){
+    setSubmissionSaveStatus('⚠ Score saved, but your database is missing newer term columns. Teacher may see it under Legacy until Supabase SQL is updated.','sending');
+  } else {
+    setSubmissionSaveStatus('✓ Score saved to teacher dashboard.','sent');
+  }
   sendEmail(sub,exam);
 }
 
@@ -6157,6 +6210,7 @@ function showResults(sub,exam,attemptInfo){
         <div class="stat-pill"><div class="val">${sub.attemptsUsed||1}/${sub.attemptsMax||3}</div><div class="lbl">Attempts</div></div>
       </div>
     </div>
+    <div id="submission-save-status-box"></div>
     <div id="email-status-box"></div>
     <div style="margin-top:22px;">
       ${sub.attemptsLeft===0
@@ -6177,6 +6231,10 @@ function showResults(sub,exam,attemptInfo){
 // ═══════════════════════════════════════════════════════════════
 function setEmailStatus(msg,cls){
   const el=document.getElementById('email-status-box');
+  if(el)el.innerHTML=`<div class="email-status ${cls}">${msg}</div>`;
+}
+function setSubmissionSaveStatus(msg,cls){
+  const el=document.getElementById('submission-save-status-box');
   if(el)el.innerHTML=`<div class="email-status ${cls}">${msg}</div>`;
 }
 async function sendEmail(sub,exam){
