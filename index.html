@@ -1360,7 +1360,7 @@ async function loadFromSupabase(){
       studentName:s.student_name, studentEmail:s.student_email,
       program:s.program, score:s.score, total:s.total,
       percentage:s.percentage, detail:s.detail||[],
-      termId:s.term_id||'',
+      termId:s.term_id||studentTermForEmail(s.student_email, students),
       gradebookOpenAt:s.gradebook_open_at||'',
       gradebookCloseAt:s.gradebook_close_at||'',
       attemptsUsed:s.attempts_used||1, attemptsMax:s.attempts_max||3,
@@ -1706,6 +1706,17 @@ function jsString(value){
 
 function emailKey(value){
   return String(value||'').trim().toLowerCase();
+}
+
+function studentTermForEmail(email, studentRows){
+  const key=emailKey(email);
+  const rows=studentRows||db_students||[];
+  const found=rows.find(s=>emailKey(s.email)===key);
+  return found ? (found.termId||found.term_id||'') : '';
+}
+
+function submissionTermId(sub){
+  return (sub&&sub.termId) || studentTermForEmail(sub&&sub.studentEmail) || '';
 }
 
 function nameKey(value){
@@ -2146,7 +2157,7 @@ function renderProgTab(){
   const progId=currentProgId||legacyProgramId(prog);
   const exams=db.exams.filter(e=>{ if(e.isRetakeExam||e.is_trashed) return false; return examBelongsToProgram(e.program,prog); });
   const terms=db_terms.filter(t=>termBelongsToProgram(t,progId,prog));
-  const legacySubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog)&&!s.termId);
+  const legacySubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog)&&!submissionTermId(s));
   const programStudents=getProgramStudentRoster(prog);
   const studentCount=programStudents.length;
   const termStudentCount=currentTermId ? programStudents.filter(s=>s.termId===currentTermId).length : null;
@@ -3115,7 +3126,7 @@ function backFromTerm(){
 function renderTermSubs(el){
   const term=db_terms.find(t=>t.id===currentTermId);
   if(!term){ el.innerHTML='<div class="empty">Term not found.</div>'; return; }
-  const subs=db.submissions.filter(s=>s.termId===currentTermId);
+  const subs=db.submissions.filter(s=>submissionTermId(s)===currentTermId);
   renderProgSubs(el, currentProgram, subs);
 }
 
@@ -3173,7 +3184,7 @@ function openAddStudentToTermModal(){
   // Also get unique students from legacy submissions for this program
   const legacyCandidates=[];
   const seenEmails=new Set(db_students.map(s=>(s.email||'').toLowerCase()));
-  db.submissions.filter(s=>studentBelongsToProgram(s.program||'',currentProgram)&&!s.termId&&!assignedToAnyTerm.has((s.studentEmail||'').toLowerCase())).forEach(s=>{
+  db.submissions.filter(s=>studentBelongsToProgram(s.program||'',currentProgram)&&!submissionTermId(s)&&!assignedToAnyTerm.has((s.studentEmail||'').toLowerCase())).forEach(s=>{
     const email=(s.studentEmail||'').toLowerCase();
     if(!seenEmails.has(email)){
       seenEmails.add(email);
@@ -3326,7 +3337,7 @@ async function removeStudentFromAnyTerm(email,termId){
 
 function renderTermGrades(el){
   // Only records assigned to this term. Legacy/unassigned data stays in the Legacy tab.
-  const subs=db.submissions.filter(s=>s.termId===currentTermId);
+  const subs=db.submissions.filter(s=>submissionTermId(s)===currentTermId);
   renderProgGrades(el, currentProgram, subs);
 }
 
@@ -5175,7 +5186,7 @@ async function syncFromSupabase(){
       studentName:s.student_name, studentEmail:s.student_email,
       program:s.program, score:s.score, total:s.total,
       percentage:s.percentage, detail:s.detail||[],
-      termId:s.term_id||'',
+      termId:s.term_id||studentTermForEmail(s.student_email, students),
       gradebookOpenAt:s.gradebook_open_at||'',
       gradebookCloseAt:s.gradebook_close_at||'',
       attemptsUsed:s.attempts_used||1, attemptsMax:s.attempts_max||3,
@@ -5570,8 +5581,8 @@ function showStudentConfirmReturning(){
 function goStudentPortal(){
   studentProgram = '';
   // Clear session
-  ss._portalName=''; ss._portalEmail=''; ss._portalProgram='';
-  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog');
+  ss._portalName=''; ss._portalEmail=''; ss._portalProgram=''; ss._portalTermId='';
+  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog'); sessionStorage.removeItem('ep_ptermid');
   ['sp-name','sp-email'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   const sp=document.getElementById('sp-program'); if(sp) sp.value='';
   const errEl=document.getElementById('sp-error'); if(errEl) errEl.textContent='';
@@ -5605,6 +5616,24 @@ async function refreshStudentExamList(){
   switchStudentTab(currentTab);
 }
 
+function backToMyExamsAfterResult(){
+  if(!ss._portalName || !ss._portalEmail || !ss._portalProgram){
+    goStudentPortal();
+    return;
+  }
+  window._studentActiveTab='done';
+  _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+  showScreen('screen-student-exams');
+  switchStudentTab('done');
+  syncFromSupabase().then(()=>{
+    if((document.querySelector('.screen.active')||{}).id==='screen-student-exams'){
+      _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
+      window._studentActiveTab='done';
+      switchStudentTab('done');
+    }
+  }).catch(()=>{});
+}
+
 // ── Levenshtein distance for fuzzy email matching ──
 function levenshtein(a,b){
   const m=a.length,n=b.length;
@@ -5625,8 +5654,8 @@ let _fuzzyState=null;
 
 function goBackToPortal(){
   // Clear session so form resets properly
-  ss._portalName=''; ss._portalEmail=''; ss._portalProgram='';
-  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog');
+  ss._portalName=''; ss._portalEmail=''; ss._portalProgram=''; ss._portalTermId='';
+  sessionStorage.removeItem('ep_pname'); sessionStorage.removeItem('ep_pemail'); sessionStorage.removeItem('ep_pprog'); sessionStorage.removeItem('ep_ptermid');
   const errEl=document.getElementById('confirm-error');
   if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
   showScreen('screen-student-portal');
@@ -6096,6 +6125,7 @@ async function submitExam(){
     id: existingIdx>=0 ? db.submissions[existingIdx].id : Date.now().toString(),
     examId:exam.id, examTitle:exam.title,
     studentName:ss.name, studentEmail:ss.email, program:ss.program,
+    termId:ss._portalTermId || (existingIdx>=0?db.submissions[existingIdx].termId:'') || studentTermForEmail(ss.email),
     score:isNewBest?score:(existingIdx>=0?db.submissions[existingIdx].score:score),
     total:exam.questions.length,
     percentage:isNewBest?pct:(existingIdx>=0?db.submissions[existingIdx].percentage:pct),
@@ -6222,7 +6252,7 @@ function showResults(sub,exam,attemptInfo){
       }
     </div>
     <div style="text-align:center;margin-top:20px;">
-      <button class="btn btn-outline" onclick="refreshStudentExamList()">← Back to My Exams</button>
+      <button class="btn btn-outline" onclick="backToMyExamsAfterResult()">← Back to My Exams</button>
     </div>`;
 }
 
