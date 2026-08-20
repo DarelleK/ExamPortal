@@ -1167,6 +1167,23 @@ async function sbFetch(path, opts={}){
   return text ? JSON.parse(text) : null;
 }
 
+async function sbFetchAll(path, opts={}){
+  const pageSize=opts.pageSize||1000;
+  const maxPages=opts.maxPages||20;
+  const out=[];
+  for(let page=0; page<maxPages; page++){
+    const sep=path.includes('?')?'&':'?';
+    const rows=await sbFetch(path+sep+'limit='+pageSize+'&offset='+(page*pageSize), opts).catch(e=>{
+      if(page===0) throw e;
+      return [];
+    });
+    if(!Array.isArray(rows)||!rows.length) break;
+    out.push(...rows);
+    if(rows.length<pageSize) break;
+  }
+  return out;
+}
+
 // Local cache — always use this for rendering
 const MAX_ATTEMPTS = 3;
 
@@ -1355,11 +1372,11 @@ async function loadFromSupabase(){
   try{
     const [exams, subs, settings, banks, manualGrades, students] = await Promise.all([
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
-      sbFetch('ep_submissions?order=date_taken.asc'),
+      sbFetchAll('ep_submissions?order=date_taken.desc'),
       sbFetch('ep_settings?id=eq.1'),
       sbFetch('ep_banks?order=created_at.asc'),
-      sbFetch('ep_manual_grades?order=date.asc').catch(()=>[]),
-      sbFetch('ep_students?order=registered_at.asc').catch(()=>[])
+      sbFetchAll('ep_manual_grades?order=date.desc').catch(()=>[]),
+      sbFetchAll('ep_students?order=registered_at.desc').catch(()=>[])
     ]);
 
     db_banks = (banks||[]).map(r=>({
@@ -1732,6 +1749,36 @@ function getProgramStudentRoster(prog){
     }
   });
   return [...map.values()].sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+}
+
+function getTermStudentRoster(termId,prog){
+  const map=new Map();
+  const add=(email,name,program,registeredAt,source)=>{
+    const key=emailKey(email);
+    if(!key) return;
+    if(prog && program && !studentBelongsToProgram(program,prog)) return;
+    const prev=map.get(key);
+    if(prev){
+      prev.name=prev.name||cleanName(name)||key;
+      prev.program=prev.program||program||prog||'';
+      prev.registeredAt=prev.registeredAt||registeredAt||'';
+      prev.sources.add(source);
+    } else {
+      map.set(key,{email:key,name:cleanName(name)||key,program:program||prog||'',termId,registeredAt:registeredAt||'',sources:new Set([source])});
+    }
+  };
+  (db_students||[]).filter(s=>(s.termId||'')===termId).forEach(s=>{
+    add(s.email,s.name,s.programs,s.registeredAt,'student');
+  });
+  db.submissions.filter(s=>submissionTermId(s)===termId).forEach(s=>{
+    add(s.studentEmail,s.studentName,s.program,s.date,'submission');
+  });
+  db_manualGrades.filter(g=>(g.termId||'')===termId).forEach(g=>{
+    add(g.email,g.name,g.program,g.date,'manual');
+  });
+  return [...map.values()]
+    .map(s=>({...s,sources:[...s.sources]}))
+    .sort((a,b)=>(a.name||'').localeCompare(b.name||''));
 }
 
 function getTermName(termId){
@@ -2238,7 +2285,7 @@ function renderProgTab(){
   const legacySubs=db.submissions.filter(s=>studentBelongsToProgram(s.program,prog)&&!submissionTermId(s));
   const programStudents=getProgramStudentRoster(prog);
   const studentCount=programStudents.length;
-  const termStudentCount=currentTermId ? programStudents.filter(s=>s.termId===currentTermId).length : null;
+  const termStudentCount=currentTermId ? getTermStudentRoster(currentTermId,prog).length : null;
 
   const statsEl=document.getElementById('prog-detail-stats');
   if(statsEl) statsEl.textContent=`${exams.length} exams · ${terms.length} terms · ${studentCount} students`;
@@ -3297,7 +3344,7 @@ function renderTermSubs(el){
 function renderTermStudents(el){
   const term=db_terms.find(t=>t.id===currentTermId);
   if(!term){ el.innerHTML='<div class="empty">Term not found.</div>'; return; }
-  const enrolled=db_students.filter(s=>s.termId===currentTermId);
+  const enrolled=getTermStudentRoster(currentTermId,currentProgram);
 
   el.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
@@ -3306,12 +3353,13 @@ function renderTermStudents(el){
     </div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${enrolled.length} student${enrolled.length!==1?'s':''} enrolled in this term</div>
     ${enrolled.length?`<table class="sub-table" style="width:100%;" id="term-students-table">
-      <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Registered</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Program</th><th>Source</th><th>Registered</th><th></th></tr></thead>
       <tbody>${enrolled.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>`
         <tr>
           <td style="font-weight:500;">${s.name}</td>
           <td style="font-size:12px;color:var(--muted);">${s.email}</td>
-          <td style="font-size:12px;">${s.programs}</td>
+          <td style="font-size:12px;">${s.programs||s.program||''}</td>
+          <td style="font-size:11px;color:var(--muted);">${(s.sources||['student']).join(', ')}</td>
           <td style="font-size:11px;color:var(--muted);">${s.registeredAt?new Date(s.registeredAt).toLocaleDateString():''}</td>
           <td>
             <button class="btn btn-outline btn-xs" onclick="removeStudentFromTerm('${s.email}')">✕ Remove</button>
@@ -5328,9 +5376,9 @@ async function syncFromSupabase(opts={}){
   try{
     const [exams, subs, students, manualGrades] = await Promise.all([
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
-      sbFetch('ep_submissions?order=date_taken.asc'),
-      sbFetch('ep_students?order=registered_at.asc').catch(()=>[]),
-      sbFetch('ep_manual_grades?order=date.asc').catch(()=>[])
+      sbFetchAll('ep_submissions?order=date_taken.desc'),
+      sbFetchAll('ep_students?order=registered_at.desc').catch(()=>[]),
+      sbFetchAll('ep_manual_grades?order=date.desc').catch(()=>[])
     ]);
 
     if(!exams) return; // Don't wipe local data if fetch failed
