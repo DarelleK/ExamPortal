@@ -1287,6 +1287,8 @@ async function syncExam(exam){
 
 // Sync a single submission to Supabase — uses upsert
 async function syncSubmission(sub){
+  sub.studentEmail=cleanEmail(sub.studentEmail);
+  sub.studentName=cleanName(sub.studentName);
   const fullBody={
     id:sub.id, exam_id:sub.examId, exam_title:sub.examTitle||'',
     term_id:sub.termId||'',
@@ -1366,7 +1368,7 @@ async function loadFromSupabase(){
     }));
 
     db_manualGrades = (manualGrades||[]).map(g=>({
-      id:g.id, email:g.email, name:g.name, program:g.program||'',
+      id:g.id, email:cleanEmail(g.email), name:cleanName(g.name), program:g.program||'',
       termId:g.term_id||'',
       category:g.category, label:g.label||g.category,
       grade:g.grade, maxGrade:g.max_grade||100, date:g.date
@@ -1394,7 +1396,7 @@ async function loadFromSupabase(){
 
     db.submissions = (subs||[]).map(s=>({
       id:s.id, examId:s.exam_id, examTitle:s.exam_title||'',
-      studentName:s.student_name, studentEmail:s.student_email,
+      studentName:cleanName(s.student_name), studentEmail:cleanEmail(s.student_email),
       program:s.program, score:s.score, total:s.total,
       percentage:s.percentage, detail:s.detail||[],
       termId:s.term_id||studentTermForEmail(s.student_email, students),
@@ -1406,10 +1408,11 @@ async function loadFromSupabase(){
     }));
 
     db_students = (students||[]).map(s=>({
-      email:s.email,name:s.name,programs:s.programs||'',
+      email:cleanEmail(s.email),name:cleanName(s.name),programs:s.programs||'',
       termId:s.term_id||'',
       registeredAt:s.registered_at,integrityPassed:s.integrity_passed
     }));
+    normalizePeopleRecords();
 
     // Load programs
     try{
@@ -1747,6 +1750,42 @@ function emailKey(value){
   return String(value||'').trim().toLowerCase();
 }
 
+function cleanEmail(value){
+  return emailKey(value);
+}
+
+function cleanName(value){
+  return String(value||'').trim().replace(/\s+/g,' ');
+}
+
+function normalizePeopleRecords(){
+  db.submissions.forEach(s=>{
+    s.studentEmail=cleanEmail(s.studentEmail);
+    s.studentName=cleanName(s.studentName);
+    if(!s.termId) s.termId=studentTermForEmail(s.studentEmail);
+  });
+  db_manualGrades.forEach(g=>{
+    g.email=cleanEmail(g.email);
+    g.name=cleanName(g.name);
+  });
+  const merged=new Map();
+  db_students.forEach(s=>{
+    const email=cleanEmail(s.email);
+    const name=cleanName(s.name);
+    const termId=s.termId||'';
+    const key=email+'::'+nameKey(name)+'::'+termId;
+    const prev=merged.get(key);
+    if(prev){
+      prev.programs=prev.programs||s.programs||'';
+      prev.registeredAt=prev.registeredAt||s.registeredAt;
+      prev.integrityPassed=!!(prev.integrityPassed||s.integrityPassed);
+    } else {
+      merged.set(key,{...s,email,name,termId});
+    }
+  });
+  db_students=[...merged.values()];
+}
+
 function studentTermForEmail(email, studentRows){
   const key=emailKey(email);
   const rows=studentRows||db_students||[];
@@ -1960,8 +1999,8 @@ async function resolveDuplicateGradeConflicts(group,canonicalEmail,canonicalName
 async function mergeDuplicateStudent(emailKey,prog,gradePolicy){
   const group=getDuplicateStudentGroups(prog).find(g=>g.key===emailKey);
   if(!group){ toast('Duplicate group not found.'); return; }
-  const canonicalEmail=[...group.emails].sort((a,b)=>a.length-b.length||a.localeCompare(b))[0];
-  const canonicalName=[...group.names].sort((a,b)=>b.length-a.length||a.localeCompare(b))[0]||canonicalEmail;
+  const canonicalEmail=cleanEmail([...group.emails].sort((a,b)=>a.length-b.length||a.localeCompare(b))[0]);
+  const canonicalName=cleanName([...group.names].sort((a,b)=>b.length-a.length||a.localeCompare(b))[0]||canonicalEmail);
   const conflicts=getDuplicateGradeConflicts(group);
   const policy=gradePolicy || (document.getElementById('duplicate-grade-policy')?.value) || 'highest';
   const policyLabel={highest:'highest grade',latest:'latest grade',oldest:'oldest grade'}[policy]||policy;
@@ -3407,8 +3446,8 @@ async function confirmAddStudentsToTerm(){
   const termId=currentTermId;
   let count=0;
   for(const cb of selected){
-    const email=cb.value;
-    const name=cb.dataset.name||'';
+    const email=cleanEmail(cb.value);
+    const name=cleanName(cb.dataset.name||'');
     const prog=cb.dataset.prog||currentProgram;
     // Update in db_students
     const key=emailKey(email);
@@ -3953,8 +3992,8 @@ function openEditStudent(sid){
 
 async function saveStudentEdit(){
   const sid=document.getElementById('edit-stu-sid').value;
-  const name=document.getElementById('edit-stu-name').value.trim();
-  const email=document.getElementById('edit-stu-email').value.trim().toLowerCase();
+  const name=cleanName(document.getElementById('edit-stu-name').value);
+  const email=cleanEmail(document.getElementById('edit-stu-email').value);
   const program=document.getElementById('edit-stu-program').value;
   if(!name||!email||!email.includes('@')||!program){
     toast('Please enter a valid name, email, and program.');
@@ -4040,8 +4079,8 @@ async function saveManualGrade(){
     document.getElementById('mg-name').value=opt.dataset.name||'';
     document.getElementById('mg-program').value=opt.dataset.prog||'';
   }
-  const email   =document.getElementById('mg-email').value.trim();
-  const name    =document.getElementById('mg-name').value.trim();
+  const email   =cleanEmail(document.getElementById('mg-email').value);
+  const name    =cleanName(document.getElementById('mg-name').value);
   const program =document.getElementById('mg-program').value;
   const category=document.getElementById('mg-category').value;
   const label   =document.getElementById('mg-label').value.trim();
@@ -5340,7 +5379,7 @@ async function syncFromSupabase(opts={}){
 
     const remoteSubmissions=(subs||[]).map(s=>({
       id:s.id, examId:s.exam_id, examTitle:s.exam_title||'',
-      studentName:s.student_name, studentEmail:s.student_email,
+      studentName:cleanName(s.student_name), studentEmail:cleanEmail(s.student_email),
       program:s.program, score:s.score, total:s.total,
       percentage:s.percentage, detail:s.detail||[],
       termId:s.term_id||studentTermForEmail(s.student_email, students),
@@ -5353,16 +5392,17 @@ async function syncFromSupabase(opts={}){
     const localPending=db.submissions.filter(s=>(s._pendingSync||pendingSubmissionSync.has(s.id))&&!remoteSubmissionIds.has(s.id));
     db.submissions=[...remoteSubmissions,...localPending];
     db_students=(students||[]).map(s=>({
-      email:s.email, name:s.name, programs:s.programs||'',
+      email:cleanEmail(s.email), name:cleanName(s.name), programs:s.programs||'',
       termId:s.term_id||'',
       registeredAt:s.registered_at, integrityPassed:s.integrity_passed
     }));
     db_manualGrades=(manualGrades||[]).map(g=>({
-      id:g.id, email:g.email, name:g.name, program:g.program||'',
+      id:g.id, email:cleanEmail(g.email), name:cleanName(g.name), program:g.program||'',
       termId:g.term_id||'',
       category:g.category, label:g.label||g.category,
       grade:g.grade, maxGrade:g.max_grade||100, date:g.date
     }));
+    normalizePeopleRecords();
 
     // Refresh programs and terms less often; they are not exam-session data.
     const shouldSyncStructure=force || Date.now()-lastStructureSyncAt > 600000;
@@ -5627,8 +5667,8 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 function showStudentConfirm(){
-  const name    = (document.getElementById('sp-name')||{value:''}).value.trim();
-  const email   = (document.getElementById('sp-email')||{value:''}).value.trim();
+  const name    = cleanName((document.getElementById('sp-name')||{value:''}).value);
+  const email   = cleanEmail((document.getElementById('sp-email')||{value:''}).value);
   const program = document.getElementById('sp-program-base')?.value||
                   document.getElementById('sp-program')?.value||'';
   if(document.getElementById('sp-program')) document.getElementById('sp-program').value=program;
@@ -5667,6 +5707,8 @@ function showStudentConfirm(){
 
 // Save new student to Supabase
 async function registerStudent(name,email,program,termId){
+  name=cleanName(name);
+  email=cleanEmail(email);
   const stu={email,name,programs:program,term_id:termId||'',registered_at:new Date().toISOString(),integrity_passed:true};
   // Add to local cache
   const idx=db_students.findIndex(s=>emailKey(s.email)===emailKey(email));
@@ -5681,8 +5723,8 @@ async function registerStudent(name,email,program,termId){
 
 
 function showStudentConfirmReturning(){
-  const name    = (document.getElementById('sp-ret-name')||{value:''}).value.trim();
-  const email   = (document.getElementById('sp-ret-email')||{value:''}).value.trim().toLowerCase();
+  const name    = cleanName((document.getElementById('sp-ret-name')||{value:''}).value);
+  const email   = cleanEmail((document.getElementById('sp-ret-email')||{value:''}).value);
   const program = document.getElementById('sp-ret-program-base')?.value||
                   document.getElementById('sp-ret-program')?.value||'';
   if(document.getElementById('sp-ret-program')) document.getElementById('sp-ret-program').value=program;
@@ -6150,8 +6192,8 @@ function goSignIn(examId){
 
 
 function startExam(){
-  const name=document.getElementById('si-name').value.trim();
-  const email=document.getElementById('si-email').value.trim();
+  const name=cleanName(document.getElementById('si-name').value);
+  const email=cleanEmail(document.getElementById('si-email').value);
   const program=document.getElementById('si-program').value;
   if(!name||!email||!program){toast('Please fill in all fields.');return;}
   if(!email.includes('@')){toast('Please enter a valid email.');return;}
@@ -6287,7 +6329,7 @@ async function submitExam(){
   const sub={
     id: existingIdx>=0 ? db.submissions[existingIdx].id : Date.now().toString(),
     examId:exam.id, examTitle:exam.title,
-    studentName:ss.name, studentEmail:ss.email, program:ss.program,
+    studentName:cleanName(ss.name), studentEmail:cleanEmail(ss.email), program:ss.program,
     termId:ss._portalTermId || (existingIdx>=0?db.submissions[existingIdx].termId:'') || studentTermForEmail(ss.email),
     score:isNewBest?score:(existingIdx>=0?db.submissions[existingIdx].score:score),
     total:exam.questions.length,
