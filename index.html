@@ -1049,19 +1049,44 @@ function studentBelongsToProgram(studentProgram, dashboardProgram){
     (dashboardProgram===COMBO_PROGRAM && sp.includes('Medical Assistant')) ||
     (dashboardProgram==='General'&&!sp);
 }
+function getExamShiftWindow(exam,termShift){
+  if(termShift==='Morning' && (exam.openMorningAt||exam.closeMorningAt)){
+    return {openAt:exam.openMorningAt||'', closeAt:exam.closeMorningAt||'', label:'Morning'};
+  }
+  if(termShift==='Evening' && (exam.openEveningAt||exam.closeEveningAt)){
+    return {openAt:exam.openEveningAt||'', closeAt:exam.closeEveningAt||'', label:'Evening'};
+  }
+  return {openAt:exam.openAt||'', closeAt:exam.closeAt||'', label:'General'};
+}
+
+function examScheduleAllows(exam,termShift){
+  const win=getExamShiftWindow(exam,termShift);
+  const now=nowWallClockMinute();
+  if(win.openAt && wallClockMinute(win.openAt)>now) return false;
+  if(win.closeAt && wallClockMinute(win.closeAt)<now) return false;
+  return true;
+}
+
+function examScheduleLine(exam,termShift){
+  const win=getExamShiftWindow(exam,termShift);
+  const parts=[];
+  if(win.openAt) parts.push('Opens '+fmtDateTime(win.openAt));
+  if(win.closeAt) parts.push('Closes '+fmtDateTime(win.closeAt));
+  return parts.length ? `${win.label}: ${parts.join(' · ')}` : '';
+}
+
 // Exams visible to a student program: exact match OR base name match
 function examVisibleTo(exam, studentProg){
   const termId=ss._portalTermId;
   const term=termId?db_terms.find(t=>t.id===termId):null;
+  const termShift=term?term.shift||'None':'None';
 
   // Closed term = no exams
   if(term&&term.isClosed) return false;
   if(term&&!dateOnlyInRange(term.startDate,term.endDate)) return false;
 
-  // Check scheduled dates
-  const now=nowWallClockMinute();
-  if(exam.openAt && wallClockMinute(exam.openAt)>now) return false;
-  if(exam.closeAt && wallClockMinute(exam.closeAt)<now) return false;
+  // Check scheduled dates. Shift-specific schedules override the shared schedule.
+  if(!examScheduleAllows(exam,termShift)) return false;
 
   // Exam must be open
   if(!exam.open) return false;
@@ -1078,11 +1103,16 @@ function examVisibleTo(exam, studentProg){
   if(!progMatches) return false;
 
   // Shift check — based on student's TERM shift, not program name
-  const termShift=term?term.shift||'None':'None';
   const hasShiftToggles=exam.openMorning||exam.openEvening;
 
   if(!hasShiftToggles) return true; // no shift restriction on this exam
-  if(termShift==='None'||termShift==='Both') return exam.openMorning||exam.openEvening;
+  if(termShift==='None'||termShift==='Both'){
+    const hasShiftSchedule=!!(exam.openMorningAt||exam.closeMorningAt||exam.openEveningAt||exam.closeEveningAt);
+    if(hasShiftSchedule){
+      return (!!exam.openMorning&&examScheduleAllows(exam,'Morning')) || (!!exam.openEvening&&examScheduleAllows(exam,'Evening'));
+    }
+    return exam.openMorning||exam.openEvening;
+  }
   if(termShift==='Morning') return !!exam.openMorning;
   if(termShift==='Evening') return !!exam.openEvening;
   return true;
@@ -1196,8 +1226,7 @@ function getAttemptRecord(exam, email, termId){
 }
 
 function saveDB(){
-  // Sync to Supabase in background — non-blocking
-  syncToSupabase().catch(e=>console.warn('Supabase sync error:',e));
+  // Compatibility hook. Record-specific sync functions persist the actual changes.
 }
 
 async function syncToSupabase(){
@@ -1240,6 +1269,10 @@ async function syncExam(exam){
       allow_review:exam.allowReview||false,
       open_at:exam.openAt||null,
       close_at:exam.closeAt||null,
+      open_morning_at:exam.openMorningAt||null,
+      close_morning_at:exam.closeMorningAt||null,
+      open_evening_at:exam.openEveningAt||null,
+      close_evening_at:exam.closeEveningAt||null,
       open_morning:exam.openMorning||false,
       open_evening:exam.openEvening||false,
       teacher_email:exam.teacherEmail||'', open:exam.open,
@@ -1345,6 +1378,10 @@ async function loadFromSupabase(){
       allowReview:e.allow_review||false,
       openAt:e.open_at||null,
       closeAt:e.close_at||null,
+      openMorningAt:e.open_morning_at||null,
+      closeMorningAt:e.close_morning_at||null,
+      openEveningAt:e.open_evening_at||null,
+      closeEveningAt:e.close_evening_at||null,
       openMorning:e.open_morning||false,
       openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
@@ -1536,7 +1573,8 @@ function updatePinDots(){
 function submitPin(){
   if(pinMode==='set'){
     if(pinEntry.length!==6){ document.getElementById('pin-error').textContent='Please enter exactly 6 digits.'; pinEntry=''; updatePinDots(); return; }
-    db.pin=pinEntry; saveDB();
+    db.pin=pinEntry;
+    syncToSupabase().catch(e=>console.warn('Settings sync error:',e));
     document.getElementById('pin-error').textContent='';
     enterTeacher();
   } else {
@@ -1593,7 +1631,8 @@ function saveSettings(){
   localStorage.setItem('ep_qb_username', qbUser);
   const np = document.getElementById('set-new-pin').value.trim();
   if(np){ if(np.length===6&&/^\d+$/.test(np)){ db.pin=np; toast('PIN updated.'); } else { toast('PIN must be exactly 6 digits.'); return; } }
-  saveDB(); closeModal('modal-settings'); toast('Settings saved!');
+  syncToSupabase().catch(e=>console.warn('Settings sync error:',e));
+  closeModal('modal-settings'); toast('Settings saved!');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2227,14 +2266,32 @@ function renderProgExams(el,prog,exams){
       </div>
       <div style="background:var(--bg);border-radius:8px;padding:8px;margin-bottom:8px;font-size:11px;" onclick="event.stopPropagation()">
         <div style="color:var(--muted);font-weight:600;margin-bottom:6px;">⏰ Schedule (optional)</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px;align-items:center;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">Shared fallback</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px;align-items:center;margin-bottom:6px;">
           <span style="color:var(--muted);">Open:</span>
           <input type="datetime-local" data-action="set-open-date" data-eid="${e.id}" value="${e.openAt?e.openAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
           <span style="color:var(--muted);">Close:</span>
           <input type="datetime-local" data-action="set-close-date" data-eid="${e.id}" value="${e.closeAt?e.closeAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
         </div>
-        ${e.openAt||e.closeAt?`<div style="margin-top:5px;font-size:10px;color:var(--accent2);">
-          ${e.openAt?'Opens: '+fmtDateTime(e.openAt):''}${e.openAt&&e.closeAt?' · ':''}${e.closeAt?'Closes: '+fmtDateTime(e.closeAt):''}
+        ${['Nurse Aide','Medication Aide'].includes(e.program)?`
+          <div style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px;">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Morning only</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:4px;align-items:center;margin-bottom:6px;">
+              <span style="color:var(--muted);">Open:</span>
+              <input type="datetime-local" data-action="set-morning-open-date" data-eid="${e.id}" value="${e.openMorningAt?e.openMorningAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
+              <span style="color:var(--muted);">Close:</span>
+              <input type="datetime-local" data-action="set-morning-close-date" data-eid="${e.id}" value="${e.closeMorningAt?e.closeMorningAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Evening only</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:4px;align-items:center;">
+              <span style="color:var(--muted);">Open:</span>
+              <input type="datetime-local" data-action="set-evening-open-date" data-eid="${e.id}" value="${e.openEveningAt?e.openEveningAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
+              <span style="color:var(--muted);">Close:</span>
+              <input type="datetime-local" data-action="set-evening-close-date" data-eid="${e.id}" value="${e.closeEveningAt?e.closeEveningAt.slice(0,16):''}" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface);width:100%;"/>
+            </div>
+          </div>`:''}
+        ${e.openAt||e.closeAt||e.openMorningAt||e.closeMorningAt||e.openEveningAt||e.closeEveningAt?`<div style="margin-top:5px;font-size:10px;color:var(--accent2);">
+          ${examScheduleLine(e,'None')}${(e.openMorningAt||e.closeMorningAt)?'<br>'+examScheduleLine(e,'Morning'):''}${(e.openEveningAt||e.closeEveningAt)?'<br>'+examScheduleLine(e,'Evening'):''}
         </div>`:''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;" onclick="event.stopPropagation()">
@@ -2306,6 +2363,24 @@ function renderProgExams(el,prog,exams){
           if(exam.closeAt && wallClockMinute(exam.closeAt)<nowWallClockMinute()){ exam.open=false; }
           saveDB(); syncExam(exam).catch(()=>{}); // No re-render — just save silently
           toast('✓ Close schedule saved');
+        } else if(action==='set-morning-open-date'){
+          exam.openMorningAt=btn.value||null;
+          if(exam.openMorningAt && wallClockMinute(exam.openMorningAt)<=nowWallClockMinute()) exam.openMorning=true;
+          saveDB(); syncExam(exam).catch(()=>{});
+          toast('✓ Morning open schedule saved');
+        } else if(action==='set-morning-close-date'){
+          exam.closeMorningAt=btn.value||null;
+          saveDB(); syncExam(exam).catch(()=>{});
+          toast('✓ Morning close schedule saved');
+        } else if(action==='set-evening-open-date'){
+          exam.openEveningAt=btn.value||null;
+          if(exam.openEveningAt && wallClockMinute(exam.openEveningAt)<=nowWallClockMinute()) exam.openEvening=true;
+          saveDB(); syncExam(exam).catch(()=>{});
+          toast('✓ Evening open schedule saved');
+        } else if(action==='set-evening-close-date'){
+          exam.closeEveningAt=btn.value||null;
+          saveDB(); syncExam(exam).catch(()=>{});
+          toast('✓ Evening close schedule saved');
         }
       });
     }
@@ -2401,6 +2476,56 @@ function renderProgSubs(el,prog,subs){
     el.querySelectorAll('[data-action="lock"]').forEach(btn=>{btn.addEventListener('click',()=>{lockStudentEmail(btn.dataset.eid,btn.dataset.email);renderProgTab();});});
   }
   render(subs);
+}
+
+function findSubmissionForAttempt(examId,email){
+  const key=emailKey(email);
+  return db.submissions.find(s=>
+    s.examId===examId &&
+    emailKey(s.studentEmail)===key &&
+    (currentTermId ? submissionTermId(s)===currentTermId : true)
+  ) || db.submissions.find(s=>s.examId===examId&&emailKey(s.studentEmail)===key);
+}
+
+function unlockSameExam(eid,email){
+  const exam=db.exams.find(e=>e.id===eid);
+  if(!exam){ toast('Exam not found.'); return; }
+  const sub=findSubmissionForAttempt(eid,email);
+  const termId=(sub&&submissionTermId(sub))||currentTermId||'';
+  const rec=getAttemptRecord(exam,email,termId);
+  rec.count=0;
+  rec.max=MAX_ATTEMPTS;
+  rec.locked=false;
+  rec.history=[];
+  if(sub){
+    sub.attemptsUsed=0;
+    sub.attemptsMax=MAX_ATTEMPTS;
+    sub.attemptsLeft=MAX_ATTEMPTS;
+    syncSubmission(sub).catch(()=>{});
+  }
+  saveDB();
+  syncExam(exam).catch(()=>{});
+  toast('🔓 Unlocked. Attempt count reset to 0/'+MAX_ATTEMPTS+'.');
+}
+
+function lockStudentEmail(eid,email){
+  const exam=db.exams.find(e=>e.id===eid);
+  if(!exam){ toast('Exam not found.'); return; }
+  const sub=findSubmissionForAttempt(eid,email);
+  const termId=(sub&&submissionTermId(sub))||currentTermId||'';
+  const rec=getAttemptRecord(exam,email,termId);
+  rec.max=MAX_ATTEMPTS;
+  rec.count=Math.max(rec.count,rec.max);
+  rec.locked=true;
+  if(sub){
+    sub.attemptsUsed=rec.count;
+    sub.attemptsMax=rec.max;
+    sub.attemptsLeft=0;
+    syncSubmission(sub).catch(()=>{});
+  }
+  saveDB();
+  syncExam(exam).catch(()=>{});
+  toast('🔒 Locked. No attempts left.');
 }
 
 function renderProgGrades(el,prog,subs){
@@ -4506,16 +4631,25 @@ function retakeSameExam(){
   const out   = document.getElementById('retake-same-output');
 
   // Guard: check if student still has attempts remaining
-  const rec = exam.studentAttempts && exam.studentAttempts[email];
+  const rec = findAttemptRecord(exam,email,retakeSub.termId||currentTermId||'');
   if(rec && !rec.locked && rec.count < rec.max){
     if(out) out.innerHTML='<span style="color:var(--accent);">⚠ '+email+' still has <strong>'+(rec.max-rec.count)+' attempt'+(rec.max-rec.count!==1?'s':'')+' remaining</strong> on this exam. A retake cannot be sent until they are used up.</span>';
     return;
   }
 
   // Reset attempt record — 3 fresh tries
-  if(!exam.studentAttempts) exam.studentAttempts={};
-  exam.studentAttempts[email]={count:0,max:MAX_ATTEMPTS,bestScore:retakeSub.percentage,bestDate:retakeSub.date,history:[],locked:false};
+  const resetRec=getAttemptRecord(exam,email,retakeSub.termId||currentTermId||'');
+  resetRec.count=0;
+  resetRec.max=MAX_ATTEMPTS;
+  resetRec.bestScore=retakeSub.percentage;
+  resetRec.bestDate=retakeSub.date;
+  resetRec.history=[];
+  resetRec.locked=false;
+  retakeSub.attemptsUsed=0;
+  retakeSub.attemptsMax=MAX_ATTEMPTS;
+  retakeSub.attemptsLeft=MAX_ATTEMPTS;
   saveDB(); syncExam(exam).catch(()=>{});
+  syncSubmission(retakeSub).catch(()=>{});
   if(out) out.innerHTML='<span style="color:var(--green);">✓ '+email+' unlocked with '+MAX_ATTEMPTS+' new attempts. They will see the exam open next time they log in.</span>';
   toast('🔓 Unlocked for '+email);
 }
@@ -5138,8 +5272,20 @@ function checkDirectLink(){
   showScreen('screen-signin');
 }
 
-// Background sync — runs every 30s to pick up changes from other devices
-async function syncFromSupabase(){
+let lastBackgroundSyncAt = 0;
+let lastStructureSyncAt = 0;
+
+// Background sync — throttled to reduce Supabase Disk IO.
+async function syncFromSupabase(opts={}){
+  const force=!!opts.force;
+  const sid=(document.querySelector('.screen.active')||{}).id;
+  if(!force){
+    if(document.hidden) return;
+    if(sid==='screen-exam' || sid==='screen-results' || sid==='screen-signin') return;
+    const minGap = sid==='screen-teacher' ? 120000 : 300000;
+    if(Date.now()-lastBackgroundSyncAt < minGap) return;
+  }
+  lastBackgroundSyncAt=Date.now();
   try{
     const [exams, subs, students, manualGrades] = await Promise.all([
       sbFetch('ep_exams?is_trashed=eq.false&order=created_at.asc'),
@@ -5154,8 +5300,15 @@ async function syncFromSupabase(){
     const now=nowWallClockMinute();
     let scheduleChanged=false;
     (exams||[]).forEach(e=>{
-      if(e.open_at && wallClockMinute(e.open_at)<=now && !e.open){ e.open=true; scheduleChanged=true; }
-      if(e.close_at && wallClockMinute(e.close_at)<now && e.open){ e.open=false; scheduleChanged=true; }
+      const hasShiftSchedule=!!(e.open_morning_at||e.close_morning_at||e.open_evening_at||e.close_evening_at);
+      if(!hasShiftSchedule){
+        if(e.open_at && wallClockMinute(e.open_at)<=now && !e.open){ e.open=true; scheduleChanged=true; }
+        if(e.close_at && wallClockMinute(e.close_at)<now && e.open){ e.open=false; scheduleChanged=true; }
+      }
+      if(e.open_morning_at && wallClockMinute(e.open_morning_at)<=now && !e.open_morning){ e.open_morning=true; scheduleChanged=true; }
+      if(e.close_morning_at && wallClockMinute(e.close_morning_at)<now && e.open_morning){ e.open_morning=false; scheduleChanged=true; }
+      if(e.open_evening_at && wallClockMinute(e.open_evening_at)<=now && !e.open_evening){ e.open_evening=true; scheduleChanged=true; }
+      if(e.close_evening_at && wallClockMinute(e.close_evening_at)<now && e.open_evening){ e.open_evening=false; scheduleChanged=true; }
     });
 
     const remoteExams=(exams||[]).map(e=>({
@@ -5164,6 +5317,10 @@ async function syncFromSupabase(){
       allowReview:e.allow_review||false,
       openAt:e.open_at||null,
       closeAt:e.close_at||null,
+      openMorningAt:e.open_morning_at||null,
+      closeMorningAt:e.close_morning_at||null,
+      openEveningAt:e.open_evening_at||null,
+      closeEveningAt:e.close_evening_at||null,
       openMorning:e.open_morning||false,
       openEvening:e.open_evening||false,
       teacherEmail:e.teacher_email||'', open:e.open,
@@ -5207,23 +5364,27 @@ async function syncFromSupabase(){
       grade:g.grade, maxGrade:g.max_grade||100, date:g.date
     }));
 
-    // Refresh programs and terms in background — MERGE don't overwrite
-    try{
-      const pr=await sbFetch('ep_programs?order=created_at.asc');
-      if(pr&&pr.length) db_programs=pr.map(p=>({id:p.id,name:p.name,hasShifts:p.has_shifts||false,createdAt:p.created_at}));
-    }catch(e){}
-    try{
-      const tr=await sbFetch('ep_terms?order=created_at.asc');
-      if(tr){
-        const remoteTerm=tr.map(t=>({id:t.id,programId:t.program_id,name:t.name,shift:t.shift||'None',
-          startDate:t.start_date||'',endDate:t.end_date||'',isClosed:t.is_closed||false,
-          examSnapshot:t.exam_snapshot||[],gradeWeights:t.grade_weights||{},createdAt:t.created_at}));
-        // Keep any local-only terms (just created, not yet confirmed in Supabase)
-        const remoteTermIds=new Set(remoteTerm.map(t=>t.id));
-        const localOnlyTerms=db_terms.filter(t=>!remoteTermIds.has(t.id));
-        db_terms=[...remoteTerm,...localOnlyTerms];
-      }
-    }catch(e){}
+    // Refresh programs and terms less often; they are not exam-session data.
+    const shouldSyncStructure=force || Date.now()-lastStructureSyncAt > 600000;
+    if(shouldSyncStructure){
+      try{
+        const pr=await sbFetch('ep_programs?order=created_at.asc');
+        if(pr&&pr.length) db_programs=pr.map(p=>({id:p.id,name:p.name,hasShifts:p.has_shifts||false,createdAt:p.created_at}));
+      }catch(e){}
+      try{
+        const tr=await sbFetch('ep_terms?order=created_at.asc');
+        if(tr){
+          const remoteTerm=tr.map(t=>({id:t.id,programId:t.program_id,name:t.name,shift:t.shift||'None',
+            startDate:t.start_date||'',endDate:t.end_date||'',isClosed:t.is_closed||false,
+            examSnapshot:t.exam_snapshot||[],gradeWeights:t.grade_weights||{},createdAt:t.created_at}));
+          // Keep any local-only terms (just created, not yet confirmed in Supabase)
+          const remoteTermIds=new Set(remoteTerm.map(t=>t.id));
+          const localOnlyTerms=db_terms.filter(t=>!remoteTermIds.has(t.id));
+          db_terms=[...remoteTerm,...localOnlyTerms];
+        }
+      }catch(e){}
+      lastStructureSyncAt=Date.now();
+    }
 
     // Silently refresh current view
     const sid=(document.querySelector('.screen.active')||{}).id;
@@ -5337,8 +5498,8 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   } else {
     checkDirectLink();
   }
-  // Poll every 30 seconds to sync changes from other devices
-  setInterval(syncFromSupabase, 30000);
+  // Poll occasionally to sync changes from other devices without burning Disk IO.
+  setInterval(()=>syncFromSupabase({force:false}), 300000);
 });
 // Also re-check if hash changes
 window.addEventListener('hashchange', ()=>{ directExamMode=false; checkDirectLink(); });
@@ -5602,7 +5763,7 @@ async function refreshStudentExamList(){
     document.body.appendChild(loadingDiv);
     try{
       // Reload data silently
-      await syncFromSupabase().catch(()=>{});
+      await syncFromSupabase({force:true}).catch(()=>{});
     }finally{
       if(loadingDiv.parentNode) loadingDiv.parentNode.removeChild(loadingDiv);
     }
@@ -5625,7 +5786,7 @@ function backToMyExamsAfterResult(){
   _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
   showScreen('screen-student-exams');
   switchStudentTab('done');
-  syncFromSupabase().then(()=>{
+  syncFromSupabase({force:true}).then(()=>{
     if((document.querySelector('.screen.active')||{}).id==='screen-student-exams'){
       _renderExamList(ss._portalName, ss._portalEmail, ss._portalProgram);
       window._studentActiveTab='done';
@@ -5749,6 +5910,8 @@ function _renderExamList(name, email, program){
   studentProgram=program;
   const portalTermId=ss._portalTermId||'';
   const portalEmailKey=emailKey(email);
+  const portalTerm=portalTermId?db_terms.find(t=>t.id===portalTermId):null;
+  const portalShift=portalTerm?portalTerm.shift||'None':'None';
 
   document.getElementById('student-exams-title').textContent = name+"'s Portal";
   document.getElementById('student-exams-sub').textContent = program;
@@ -5832,7 +5995,7 @@ function _renderExamList(name, email, program){
       <div>
         <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:2px;">${e.questions.length} questions · ${attLeft} attempt${attLeft!==1?'s':''} available</div>
-        ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ Closes ${fmtDateTime(e.closeAt)}</div>`:''}
+        ${examScheduleLine(e,portalShift)?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ ${examScheduleLine(e,portalShift)}</div>`:''}
       </div>
       <button class="btn btn-primary btn-sm" data-eid="${e.id}">Take Exam →</button>
     </div>`;
@@ -5918,7 +6081,7 @@ function switchStudentTab(tab){
         <div>
           <div style="font-weight:600;font-size:14px;">${icon} ${e.title}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px;">${e.questions.length} questions · ${attLeft} attempt${attLeft!==1?'s':''} available</div>
-          ${e.closeAt?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ Closes ${fmtDateTime(e.closeAt)}</div>`:''}
+          ${examScheduleLine(e,portalShift)?`<div style="font-size:11px;color:var(--accent);margin-top:3px;">⏰ ${examScheduleLine(e,portalShift)}</div>`:''}
         </div>
         <button class="btn btn-primary btn-sm" data-eid="${e.id}">Take Exam →</button>
       </div>`;
